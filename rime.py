@@ -1,5 +1,5 @@
 #!/usr/bin/python
-## -*- coding: utf-8; mode: python -*-
+# -*- coding: utf-8; mode: python -*-
 ##
 ## Copyright (c) 2010 TAKAHASHI, Shuhei
 ##
@@ -26,7 +26,7 @@ import sys
 import os
 import time
 import re
-from optparse import OptionParser
+import optparse
 import imp
 import subprocess
 import threading
@@ -535,7 +535,7 @@ class DiffCode(Code):
         return (result, "")
 
     def Run(self, args, cwd, input, output, timeout):
-        parser = OptionParser()
+        parser = optparse.OptionParser()
         parser.add_option('-i', '--infile', dest='infile')
         parser.add_option('-d', '--difffile', dest='difffile')
         parser.add_option('-o', '--outfile', dest='outfile')
