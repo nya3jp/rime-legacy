@@ -35,6 +35,22 @@ import shutil
 import pickle
 
 
+HELP_MESSAGE = """\
+Usage: rime.py COMMAND [OPTIONS] [DIR]
+
+Commands:
+  build     build solutions/tests
+  test      run tests
+  clean     clean up built files
+  help      show this help message and exit
+
+Options:
+  -h, --help         show this help message and exit
+  -I, --indicator    use indicator for progress display
+  -C, --cache-tests  cache test results
+"""
+
+
 class FileNames(object):
 
     RIMEROOT_FILE = 'RIMEROOT'
@@ -111,6 +127,18 @@ class FileUtil(object):
             return False
 
     @classmethod
+    def ListDir(cls, dir, recurse=False):
+        files = os.listdir(dir)
+        if recurse:
+            for subfile in files[:]:
+                subdir = os.path.join(dir, subfile)
+                if os.path.isdir(subdir):
+                    files += [os.path.join(subfile, s)
+                              for s in cls.ListDir(subdir, True)]
+        #print "ListDir(%s) = %s" % (dir, files)
+        return files
+
+    @classmethod
     def PickleSave(cls, obj, file):
         try:
             f = open(file, 'w')
@@ -140,16 +168,42 @@ class FileUtil(object):
 
 class Console(object):
 
+    overwrite = False
+    color = False
+
+    @classmethod
+    def Init(cls):
+        if not sys.stdout.isatty():
+            return
+        try:
+            import curses
+            curses.setupterm()
+            if cls._tigetstr('cuu1'):
+                cls.overwrite = True
+            if cls._tigetstr('setaf'):
+                cls.color = True
+        except:
+            pass
+
+    @classmethod
+    def _tigetstr(cls, name):
+        import curses
+        return curses.tigetstr(name) or ''
+
     @classmethod
     def Print(cls, msg, overwrite=False):
-        if overwrite:
-            print "\x1b[1A%s\x1b[K" % msg
-        else:
+        if not cls.color:
+            msg = re.sub(r'\x1b\[\d*.', '', msg)
             print msg
+        else:
+            if overwrite and cls.overwrite:
+                print "\x1b[1A\r%s\x1b[K" % msg
+            else:
+                print msg
 
     @classmethod
     def PrintAction(cls, action, obj, msg=None, overwrite=False):
-        head = "\x1b[32m" + ("[" + action + "]").ljust(11, ' ') + "\x1b[0m "
+        head = "\x1b[32m" + ("[" + action.center(10) + "]") + "\x1b[0m "
         if not msg:
             cls.Print("%s%s" % (head, obj.fullname), overwrite)
         else:
@@ -171,6 +225,9 @@ class Console(object):
     def PrintTitle(cls, title):
         cls.Print("")
         cls.Print("\x1b[1m%s:\x1b[0m" % title)
+
+Console.Init()
+
 
 
 class TestResult(object):
@@ -308,7 +365,7 @@ class ActionResults(object):
                 line += " "
                 line += ("%d solutions, %d tests" %
                          (len(test_result.problem.solutions),
-                          len(test_result.problem.tests._ListInputFiles())))
+                          len(test_result.problem.tests.ListInputFiles())))
                 Console.Print(line)
                 line = ""
                 last_problem = test_result.problem
@@ -481,7 +538,7 @@ class CCode(Code):
 class CXXCode(Code):
 
     def __init__(self, src_name, src_dir, out_dir, flags):
-        super(CCode, self).__init__(
+        super(CXXCode, self).__init__(
             src_name=src_name, src_dir=src_dir, out_dir=out_dir)
         self.exe_name = os.path.splitext(src_name)[0] + FileNames.EXE_EXT
         self.compile_args = ['g++',
@@ -548,14 +605,12 @@ class DiffCode(Code):
 
 class ConfigurableObject(object):
 
-    class Config(object):
-        pass
-
     @classmethod
     def CanLoadFrom(cls, base_dir):
         return os.path.isfile(os.path.join(base_dir, cls.CONFIG_FILE))
 
     def __init__(self, name, base_dir, parent):
+        #print "ConfigurableObject at %s: %s" % (base_dir, name)
         self.name = name
         self.base_dir = base_dir
         self.parent = parent
@@ -569,21 +624,20 @@ class ConfigurableObject(object):
         real_config_file = self.config_file
         if not os.path.isfile(real_config_file):
             real_config_file = os.devnull
-        self.config = ConfigurableObject.Config()
+        self.config = dict()
         self.__export_dict = dict()
         self._PreLoad()
         for name in dir(self):
             try:
                 attr = getattr(self, name)
-                if attr.im_func.__export_mark:
-                    self.__export_dict[attr.im_func.func_name] = attr
+                self.__export_dict[attr.im_func.__export_config] = attr
             except:
                 pass
         try:
             f = open(real_config_file, 'rb')
             script = f.read()
             code = compile(script, self.config_file, 'exec')
-            exec(code, self.__export_dict, self.config.__dict__)
+            exec(code, self.__export_dict, self.config)
         finally:
             try:
                 f.close()
@@ -611,16 +665,17 @@ class ConfigurableObject(object):
             return False
         if not os.path.isdir(self.src_dir):
             return False
-        for name in ['.'] + os.listdir(self.src_dir):
+        for name in ['.'] + FileUtil.ListDir(self.src_dir, True):
             if (FileUtil.GetModified(os.path.join(self.src_dir, name)) >
                 stamp_mtime):
                 return False
         return True
 
     @classmethod
-    def export(cls, f):
-        f.__export_mark = True
-        return f
+    def export(cls, name):
+        def ExportImpl(f):
+            f.__export_config = name
+        return ExportImpl
 
     def _AddCodeRegisterer(self, field_name, command_name):
         multiple = (type(getattr(self, field_name)) is list)
@@ -634,19 +689,16 @@ class ConfigurableObject(object):
                 setattr(self, field_name, code)
             if multiple:
                 field.append(code)
-        @ConfigurableObject.export
         def CRegister(src, flags=['-Wall', '-g', '-O2', '-lm']):
             GenericRegister(CCode(
                 src_name=src,
                 src_dir=self.src_dir, out_dir=self.out_dir,
                 flags=flags))
-        @ConfigurableObject.export
         def CXXRegister(src, flags=['-Wall', '-g', '-O2']):
             GenericRegister(CXXCode(
                 src_name=src,
                 src_dir=self.src_dir, out_dir=self.out_dir,
                 flags=flags))
-        @ConfigurableObject.export
         def JavaRegister(
             src, encoding='UTF-8', mainclass='Main',
             compile_flags=[], run_flags=['-Xmx256M']):
@@ -656,7 +708,6 @@ class ConfigurableObject(object):
                 encoding=encoding, mainclass=mainclass,
                 compile_flags=compile_flags,
                 run_flags=run_flags))
-        @ConfigurableObject.export
         def ScriptRegister(src, interpreter='perl'):
             GenericRegister(ScriptCode(
                 src_name=src,
@@ -693,13 +744,14 @@ class RimeRoot(ConfigurableObject):
 
     def _PostLoad(self):
         self.problems = []
-        for name in sorted(os.listdir(self.base_dir)):
+        for name in sorted(FileUtil.ListDir(self.base_dir)):
             dir = os.path.join(self.base_dir, name)
             if Problem.CanLoadFrom(dir):
                 problem = Problem(name, dir, self)
                 self.problems.append(problem)
 
     def FindByBaseDir(self, dir):
+        #print "FindByBaseDir: %s vs %s" % (dir, self.base_dir)
         if self.base_dir == dir:
             return self
         for problem in self.problems:
@@ -746,12 +798,12 @@ class Problem(ConfigurableObject):
         self.out_dir = os.path.join(self.base_dir, FileNames.RIME_OUT_DIR)
 
     def _PostLoad(self):
-        if not hasattr(self.config, 'TIME_LIMIT'):
+        if 'TIME_LIMIT' not in self.config:
             all_results.Error(self, "Time limit is not specified")
         else:
-            self.timeout = self.config.TIME_LIMIT
+            self.timeout = self.config['TIME_LIMIT']
         self.solutions = []
-        for name in sorted(os.listdir(self.base_dir)):
+        for name in sorted(FileUtil.ListDir(self.base_dir)):
             dir = os.path.join(self.base_dir, name)
             if Solution.CanLoadFrom(dir):
                 solution = Solution(name, dir, self)
@@ -764,13 +816,13 @@ class Problem(ConfigurableObject):
 
     def _DetermineReferenceSolution(self):
         self.reference_solution = None
-        if not hasattr(self.config, 'REFERENCE_SOLUTION'):
+        if 'REFERENCE_SOLUTION' not in self.config:
             for solution in self.solutions:
                 if solution.IsCorrect():
                     self.reference_solution = solution
                     break
         else:
-            reference_solution_name = self.config.REFERENCE_SOLUTION
+            reference_solution_name = self.config['REFERENCE_SOLUTION']
             for solution in self.solutions:
                 if solution.name == reference_solution_name:
                     self.reference_solution = solution
@@ -782,13 +834,14 @@ class Problem(ConfigurableObject):
                      reference_solution_name))
 
     def FindByBaseDir(self, dir):
+        #print "FindByBaseDir: %s vs %s" % (dir, self.base_dir)
         if self.base_dir == dir:
             return self
         for solution in self.solutions:
             found = solution.FindByBaseDir(dir)
             if found:
                 return found
-        return None
+        return self.tests.FindByBaseDir(dir)
 
     def Build(self):
         success = True
@@ -842,6 +895,7 @@ class Tests(ConfigurableObject):
         pass
 
     def FindByBaseDir(self, dir):
+        #print "FindByBaseDir: %s vs %s" % (dir, self.base_dir)
         if self.base_dir == dir:
             return self
         return None
@@ -875,7 +929,7 @@ class Tests(ConfigurableObject):
             return False
         if not self._RunValidator():
             return False
-        if self._ListInputFiles():
+        if self.ListInputFiles():
             if not self._CompileReferenceSolution():
                 return False
             if not self._RunReferenceSolution():
@@ -925,7 +979,7 @@ class Tests(ConfigurableObject):
 
     def _RunValidator(self):
         Console.PrintAction("VALIDATE", self)
-        infiles = self._ListInputFiles()
+        infiles = self.ListInputFiles()
         test_result = TestResult(None, None, infiles)
         for (i, infile) in enumerate(infiles):
             test_result.SetStatus(infile, TestResult.RUN)
@@ -992,7 +1046,7 @@ class Tests(ConfigurableObject):
                               "Reference solution is not available")
             return False
         Console.PrintAction("REFRUN", reference_solution)
-        infiles = self._ListInputFiles()
+        infiles = self.ListInputFiles()
         test_result = TestResult(None, None, infiles)
         for (i, infile) in enumerate(infiles):
             difffile = os.path.splitext(infile)[0] + FileNames.DIFF_EXT
@@ -1050,7 +1104,7 @@ class Tests(ConfigurableObject):
             return False
         cookie = solution.GetCacheStamp()
         Console.PrintAction("TEST", solution)
-        infiles = self._ListInputFiles()
+        infiles = self.ListInputFiles()
         test_result = TestResult(self.problem, solution, infiles)
         test_result.result = TestResult.PASSED
         error = None
@@ -1203,9 +1257,14 @@ class Tests(ConfigurableObject):
         Console.PrintAction("CLEAN", self)
         return FileUtil.RemoveTree(self.out_dir)
 
-    def _ListInputFiles(self):
-        infiles = [s for s in os.listdir(self.out_dir)
-                   if s.endswith(FileNames.IN_EXT)]
+    def ListInputFiles(self):
+        infiles = []
+        for infile in FileUtil.ListDir(self.out_dir, True):
+            if not infile.endswith(FileNames.IN_EXT):
+                continue
+            if not os.path.isfile(os.path.join(self.out_dir, infile)):
+                continue
+            infiles.append(infile)
         return self._SortInputFiles(infiles)
 
     def _SortInputFiles(self, infiles):
@@ -1245,7 +1304,7 @@ class Solution(ConfigurableObject):
             src = None
             solution_func = None
             ambiguous = False
-            for name in os.listdir(self.src_dir):
+            for name in FileUtil.ListDir(self.src_dir):
                 if not os.path.isfile(os.path.join(self.src_dir, name)):
                     continue
                 ext = os.path.splitext(name)[1]
@@ -1264,14 +1323,15 @@ class Solution(ConfigurableObject):
                 all_results.Error(self, "Source file not found")
             else:
                 solution_func(src=src)
-        if hasattr(self.config, 'CHALLENGE_CASES'):
+        if 'CHALLENGE_CASES' in self.config:
             self.correct = False
-            self.challenge_cases = self.config.CHALLENGE_CASES
+            self.challenge_cases = self.config['CHALLENGE_CASES']
         else:
             self.correct = True
             self.challenge_cases = None
 
     def FindByBaseDir(self, dir):
+        #print "FindByBaseDir: %s vs %s" % (dir, self.base_dir)
         if self.base_dir == dir:
             return self
         return None
@@ -1383,22 +1443,23 @@ class Rime(object):
         all_results.PrintTestSummary()
         all_results.PrintErrorSummary()
 
+    def _PrintHelp(self):
+        print HELP_MESSAGE
+
     def _ParseArgs(self, args):
-        parser = OptionParser(usage="%prog command [dir] [options]")
+        parser = optparse.OptionParser(usage="%prog command [dir] [options]")
         parser.add_option('-I', '--indicator', dest='use_indicator',
-                          default=False, action="store_true",
-                          help="use indicator for progress display")
+                          default=False, action="store_true")
         parser.add_option('-C', '--cache-tests', dest='cache_tests',
-                          default=False, action="store_true",
-                          help="cache test results")
+                          default=False, action="store_true")
         (self.options, self.args) = parser.parse_args(args[1:])
         for name in dir(RimeOptions):
             if name.startswith('_'):
                 continue
             setattr(RimeOptions, name, getattr(self.options, name))
         self.cmd = self.args[0] if self.args else None
-        if self.cmd == 'help':
-            parser.print_help()
+        if not self.cmd or self.cmd == 'help':
+            self._PrintHelp()
             sys.exit(0)
         if len(self.args) <= 1:
             self.target_dir = None
@@ -1421,13 +1482,27 @@ class Rime(object):
         self.root = RimeRoot(None, dir, None)
         if self.target_dir is None:
             self.target_dir = self.root.base_dir
+        #print "Target directory: %s" % self.target_dir
         self.target = self.root.FindByBaseDir(self.target_dir)
         if self.target is None:
             all_results.Error(None,
                               "Specified directory is not maintained by Rime")
 
 
+def main():
+    try:
+        rime = Rime()
+        rime.Main(sys.argv)
+    except KeyboardInterrupt:
+        sys.exit(1)
+    except SystemExit:
+        raise
+    except:
+        exc = sys.exc_info()
+        sys.excepthook(*exc)
+        sys.exit(1)
+
+
 if __name__ == '__main__':
-    rime = Rime()
-    rime.Main(sys.argv)
+    main()
 
