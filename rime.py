@@ -443,11 +443,11 @@ class Code(object):
         self.src_dir = src_dir
         self.out_dir = out_dir
 
-    def MakeOut_Dir(self):
+    def MakeOutDir(self):
         FileUtil.MakeDir(self.out_dir)
 
     def Compile(self):
-        self.MakeOut_Dir()
+        self.MakeOutDir()
         result = self._ExecForCompile(args=self.compile_args)
         log = self._ReadCompileLog()
         return (result, log)
@@ -572,7 +572,7 @@ class ScriptCode(Code):
         self.run_args = [interpreter, os.path.join(self.out_dir, self.src_name)]
 
     def Compile(self):
-        self.MakeOut_Dir()
+        self.MakeOutDir()
         FileUtil.CopyFile(os.path.join(self.src_dir, self.src_name),
                           os.path.join(self.out_dir, self.src_name))
         result = RunResult(RunResult.OK, 0.0)
@@ -971,8 +971,8 @@ class Tests(ConfigurableObject):
             Console.PrintAction("COMPILE", self, self.validator.src_name)
         (res, log) = self.validator.Compile()
         if res.status != RunResult.OK:
-            results.Error(self,
-                          "%s: Compile Error" % self.validator.src_name)
+            all_results.Error(self,
+                              "%s: Compile Error" % self.validator.src_name)
             Console.PrintLog(log)
             return False
         return True
@@ -998,12 +998,12 @@ class Tests(ConfigurableObject):
                 input=os.path.join(self.out_dir, infile), output=os.devnull,
                 timeout=None)
             if res.status == RunResult.NG:
-                results.Error(self, self.validator.src_name,
-                              "Validation Failed")
+                all_results.Error(self, self.validator.src_name,
+                                  "Validation Failed")
                 return False
             elif res.status != RunResult.OK:
-                results.Error(self, self.validator.src_name,
-                              "Runtime Error on %s" % infile)
+                all_results.Error(self, self.validator.src_name,
+                                  "Runtime Error on %s" % infile)
                 return False
             test_result.SetStatus(infile, TestResult.AC)
         if RimeOptions.use_indicator:
@@ -1025,8 +1025,8 @@ class Tests(ConfigurableObject):
                                 self.judge.src_name)
         (res, log) = self.judge.Compile()
         if res.status != RunResult.OK:
-            results.Error(self,
-                          "%s: Compile Error" % self.judge.src_name)
+            all_results.Error(self,
+                              "%s: Compile Error" % self.judge.src_name)
             Console.PrintLog(log)
             return False
         return True
