@@ -135,7 +135,6 @@ class FileUtil(object):
         if os.path.isdir(subdir):
           files += [os.path.join(subfile, s)
                     for s in cls.ListDir(subdir, True)]
-    #print "ListDir(%s) = %s" % (dir, files)
     return files
 
   @classmethod
@@ -610,7 +609,6 @@ class ConfigurableObject(object):
     return os.path.isfile(os.path.join(base_dir, cls.CONFIG_FILE))
 
   def __init__(self, name, base_dir, parent):
-    #print "ConfigurableObject at %s: %s" % (base_dir, name)
     self.name = name
     self.base_dir = base_dir
     self.parent = parent
@@ -751,7 +749,6 @@ class RimeRoot(ConfigurableObject):
         self.problems.append(problem)
 
   def FindByBaseDir(self, dir):
-    #print "FindByBaseDir: %s vs %s" % (dir, self.base_dir)
     if self.base_dir == dir:
       return self
     for problem in self.problems:
@@ -834,7 +831,6 @@ class Problem(ConfigurableObject):
            reference_solution_name))
 
   def FindByBaseDir(self, dir):
-    #print "FindByBaseDir: %s vs %s" % (dir, self.base_dir)
     if self.base_dir == dir:
       return self
     for solution in self.solutions:
@@ -895,7 +891,6 @@ class Tests(ConfigurableObject):
     pass
 
   def FindByBaseDir(self, dir):
-    #print "FindByBaseDir: %s vs %s" % (dir, self.base_dir)
     if self.base_dir == dir:
       return self
     return None
@@ -1331,7 +1326,6 @@ class Solution(ConfigurableObject):
       self.challenge_cases = None
 
   def FindByBaseDir(self, dir):
-    #print "FindByBaseDir: %s vs %s" % (dir, self.base_dir)
     if self.base_dir == dir:
       return self
     return None
@@ -1482,7 +1476,6 @@ class Rime(object):
     self.root = RimeRoot(None, dir, None)
     if self.target_dir is None:
       self.target_dir = self.root.base_dir
-    #print "Target directory: %s" % self.target_dir
     self.target = self.root.FindByBaseDir(self.target_dir)
     if self.target is None:
       all_results.Error(None,
