@@ -193,13 +193,11 @@ class Console(object):
   @classmethod
   def Print(cls, msg, overwrite=False):
     if not cls.color:
-      msg = re.sub(r'\x1b\[\d*.', '', msg)
-      print msg
+      msg = re.sub(r'\x1b\[[0-9;]*.', '', msg)
+    if overwrite and cls.overwrite:
+      print "\x1b[1A\r%s\x1b[K" % msg
     else:
-      if overwrite and cls.overwrite:
-        print "\x1b[1A\r%s\x1b[K" % msg
-      else:
-        print msg
+      print msg
 
   @classmethod
   def PrintAction(cls, action, obj, msg=None, overwrite=False):
