@@ -1638,8 +1638,6 @@ class Rime(object):
     parser = optparse.OptionParser(add_help_option=False)
     parser.add_option('-h', '--help', dest='show_help',
                       default=False, action="store_true")
-    parser.add_option('-I', '--indicator', dest='use_indicator',
-                      default=False, action="store_true")
     parser.add_option('-C', '--cache-tests', dest='cache_tests',
                       default=False, action="store_true")
     (options, args) = parser.parse_args(args[1:])
