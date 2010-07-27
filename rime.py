@@ -52,6 +52,9 @@ Options:
 
 
 class FileNames(object):
+  """
+  Set of filename constants.
+  """
 
   RIMEROOT_FILE = 'RIMEROOT'
   PROBLEM_FILE = 'PROBLEM'
@@ -71,13 +74,11 @@ class FileNames(object):
   CACHE_EXT = '.cache'
 
 
-class RimeOptions(object):
-
-  cache_tests = True
-  use_indicator = False
-
 
 class FileUtil(object):
+  """
+  Set of utility functions to manipulate files.
+  """
 
   @classmethod
   def CopyFile(cls, src, dst):
@@ -102,6 +103,7 @@ class FileUtil(object):
       shutil.copytree(src, dst)
       return True
     except:
+      raise
       return False
 
   @classmethod
@@ -166,21 +168,43 @@ class FileUtil(object):
 
 
 class Console(object):
+  """
+  Provides common interface for printing to console.
+  """
 
-  overwrite = False
-  color = False
+  # Capabilities of the console.
+  overwritible = False
+  colorable = False
+
+  # Console codes.
+  # Set in _SetupColors() if available.
+  BOLD = ''
+  RED = ''
+  GREEN = ''
+  YELLOW = ''
+  BLUE = ''
+  MAGENTA = ''
+  CYAN = ''
+  WHITE = ''
+  NORMAL = ''
+  UP = ''
+  KILL = ''
 
   @classmethod
   def Init(cls):
+    """
+    Check availability of console codes.
+    """
     if not sys.stdout.isatty():
       return
     try:
       import curses
       curses.setupterm()
       if cls._tigetstr('cuu1'):
-        cls.overwrite = True
+        cls.overwritible = True
       if cls._tigetstr('setaf'):
-        cls.color = True
+        cls.colorable = True
+        cls._SetupColors()
     except:
       pass
 
@@ -190,119 +214,190 @@ class Console(object):
     return curses.tigetstr(name) or ''
 
   @classmethod
-  def Print(cls, msg, overwrite=False):
-    if not cls.color:
-      msg = re.sub(r'\x1b\[[0-9;]*.', '', msg)
-    if overwrite and cls.overwrite:
-      print "\x1b[1A\r%s\x1b[K" % msg
+  def _SetupColors(cls):
+    cls.BOLD = '\x1b[1m'
+    cls.RED = '\x1b[31m'
+    cls.GREEN = '\x1b[32m'
+    cls.YELLOW = '\x1b[33m'
+    cls.BLUE = '\x1b[34m'
+    cls.MAGENTA = '\x1b[35m'
+    cls.CYAN = '\x1b[36m'
+    cls.WHITE = '\x1b[37m'
+    cls.NORMAL = '\x1b[0m'
+    cls.UP = '\x1b[1A'
+    cls.KILL = '\x1b[K'
+
+  @classmethod
+  def Print(cls, *args, **kwargs):
+    """
+    Print one line.
+    Each argument is either ordinal string or control code.
+    """
+    overwrite = kwargs.get('overwrite')
+    msg = "".join(args)
+    if overwrite and cls.overwritible:
+      print cls.UP + "\r" + msg + cls.KILL
     else:
       print msg
 
   @classmethod
-  def PrintAction(cls, action, obj, msg=None, overwrite=False):
-    head = "\x1b[32m" + ("[" + action.center(10) + "]") + "\x1b[0m "
-    if not msg:
-      cls.Print("%s%s" % (head, obj.fullname), overwrite)
-    else:
-      cls.Print("%s%s: %s" % (head, obj.fullname, msg), overwrite)
+  def PrintAction(cls, action, obj, *args, **kwargs):
+    """
+    Utility function to print actions.
+    """
+    args = list(args)
+    if args:
+      args = [": "] + args
+    args = [cls.GREEN, "[" + action.center(10) + "]", cls.NORMAL, " ", obj.fullname] + args
+    cls.Print(*args, **kwargs)
 
   @classmethod
   def PrintError(cls, msg):
-    cls.Print("\x1b[31mERROR:\x1b[0m %s" % msg)
+    """
+    Utility function to print errors.
+    """
+    cls.Print(cls.RED, "ERROR:", cls.NORMAL, " ", msg)
 
   @classmethod
   def PrintWarning(cls, msg):
-    cls.Print("\x1b[33mWARNING:\x1b[0m %s" % msg)
+    """
+    Utility function to print warnings.
+    """
+    cls.Print(cls.YELLOW, "WARNING:", cls.NORMAL, " ", msg)
 
   @classmethod
   def PrintLog(cls, log):
+    """
+    Barely print messages.
+    Used to print logs such as compiler's output.
+    """
     print log,
 
-  @classmethod
-  def PrintTitle(cls, title):
-    cls.Print("")
-    cls.Print("\x1b[1m%s:\x1b[0m" % title)
-
+# Call Init() on load time.
 Console.Init()
 
 
 
+class ErrorRecorder(object):
+  """
+  Accumurates errors/warnings and print summary of them.
+  """
+
+  def __init__(self):
+    self.errors = []
+    self.warnings = []
+
+  def Error(self, source, reason, quiet=False):
+    """
+    Emit an error.
+    If quiet is True it is not printed immediately, but shown in summary.
+    """
+    if source:
+      self.errors.append("%s: %s" % (source.fullname, reason))
+    else:
+      self.errors.append(reason)
+    if not quiet:
+      Console.PrintError(reason)
+
+  def Warning(self, source, reason, quiet=False):
+    """
+    Emit an warning.
+    If quiet is True it is not printed immediately, but shown in summary.
+    """
+    if source:
+      self.warnings.append("%s: %s" % (source.fullname, reason))
+    else:
+      self.warnings.append(reason)
+    if not quiet:
+      Console.PrintWarning(reason)
+
+  def HasError(self):
+    return bool(self.errors)
+
+  def HasWarning(self):
+    return bool(self.warnings)
+
+  def PrintSummary(self):
+    for e in self.errors:
+      Console.PrintError(e)
+    for e in self.warnings:
+      Console.PrintWarning(e)
+    Console.Print(("Total %d errors, %d warnings" %
+                   (len(self.errors), len(self.warnings))))
+
+
+
+class SingleCaseResult(object):
+  """
+  Represents the test result of a single solution versus
+  a single test case.
+  """
+
+  def __init__(self, verdict, time):
+    self.verdict = verdict
+    self.time = time
+
+
 class TestResult(object):
+  """
+  Represents the test result of a single solution.
+  """
 
-  DEF = "."
-  RUN = "\x1b[1m#\x1b[0m"
-  AC = "\x1b[36m*\x1b[0m"
-  WA = "\x1b[31mW\x1b[0m"
-  TLE = "\x1b[31mT\x1b[0m"
-  RE = "\x1b[31mE\x1b[0m"
-  ERR = "\x1b[1;41m!\x1b[0m"
+  NA = "-"
+  AC = "Accepted"
+  WA = "Wrong Answer"
+  TLE = "Time Limit Exceeded"
+  RE = "Runtime Error"
+  ERR = "System Error"
 
-  PASSED = "\x1b[1mPASSED\x1b[0m"
-  FAILED = "\x1b[1;31mFAILED\x1b[0m"
+  COLORS = {
+    NA: [],
+    AC: [Console.CYAN],
+    WA: [Console.RED],
+    TLE: [Console.RED],
+    RE: [Console.RED],
+    ERR: [Console.RED],
+    }
 
   def __init__(self, problem, solution, files):
+    """
+    Construct with empty results.
+    """
     self.problem = problem
     self.solution = solution
     self.files = files[:]
-    self.status = dict()
-    self.times = dict()
-    for file in self.files:
-      self.status[file] = self.DEF
-      self.times[file] = None
-    self.result = None
+    self.cases = dict(
+      [(file, SingleCaseResult(TestResult.NA, None))
+       for file in files])
+    self.passed = None
     self.detail = None
     self.ruling_file = None
 
-  def SetStatus(self, file, status):
-    self.status[file] = status
-
-  def SetTime(self, file, time):
-    self.times[file] = time
-
-  def GetIndicator(self):
-    s = ""
-    for file in self.files:
-      s += self.status[file]
-    return s
-
   def IsAllAccepted(self):
-    return all([x == self.AC for x in self.status.values()])
+    """
+    Checks if accpeted in all cases.
+    """
+    return all([c.verdict == TestResult.AC for c in self.cases.values()])
 
-  def GetAnyAccepted(self):
-    for file in self.files:
-      if self.status[file] == self.AC:
-        return file
-    return None
+  def GetMaxTime(self):
+    """
+    Get maximum time.
+    All case should be accepted.
+    """
+    return max([c.time for c in self.cases.values()])
 
-  def GetAnyRejected(self):
-    for file in self.files:
-      if self.status[file] != self.DEF and self.status[file] != self.AC:
-        return file
-    return None
-
-  def GetRejectReason(self, file):
-    status = self.status[file]
-    if status == self.WA:
-      return "Wrong Answer"
-    if status == self.TLE:
-      return "Time Limit Exceeded"
-    if status == self.RE:
-      return "Runtime Error"
-    if status == self.ERR:
-      return "System Error"
-    raise ValueError()
-
-  def HasTimeStats(self):
-    return (self.files and
-            all([x is not None for x in self.times.values()]))
-
-  def GetTimeStats(self):
-    max_time = max(self.times.values())
-    total_time = sum(self.times.values())
-    return "%.2f/%.2f" % (max_time, total_time)
+  def GetTotalTime(self):
+    """
+    Get total time.
+    All case should be accepted.
+    """
+    return sum([c.time for c in self.cases.values()])
 
   @classmethod
-  def Compare(self, a, b):
+  def CompareForListing(cls, a, b):
+    """
+    Compare two TestResult for display-ordering.
+    """
     if a.problem.name != b.problem.name:
       return cmp(a.problem.name, b.problem.name)
     reference_solution = a.problem.reference_solution
@@ -316,114 +411,20 @@ class TestResult(object):
 
 
 
-class ActionResults(object):
-
-  def __init__(self):
-    self.errors = []
-    self.warnings = []
-    self.test_results = []
-
-  def Error(self, source, reason, quiet=False):
-    if source:
-      self.errors.append("%s: %s" % (source.fullname, reason))
-    else:
-      self.errors.append(reason)
-    if not quiet:
-      Console.PrintError(reason)
-
-  def Warning(self, source, reason, quiet=False):
-    if source:
-      self.warnings.append("%s: %s" % (source.fullname, reason))
-    else:
-      self.warnings.append(reason)
-    if not quiet:
-      Console.PrintWarning(reason)
-
-  def HasError(self):
-    return (len(self.errors) > 0)
-
-  def AddTestResult(self, test_result):
-    self.test_results.append(test_result)
-
-  def PrintTestSummary(self):
-    if len(self.test_results) == 0:
-      return
-    problem_name_width = max(
-      map(lambda t: len(t.problem.name), self.test_results))
-    solution_name_width = max(
-      map(lambda t: len(t.solution.name), self.test_results))
-    last_problem = None
-    for test_result in sorted(self.test_results, TestResult.Compare):
-      line = ""
-      if last_problem is not test_result.problem:
-        line += "\x1b[36m"
-        line += test_result.problem.name.ljust(problem_name_width)
-        line += "\x1b[0m"
-        line += " "
-        line += ("%d solutions, %d tests" %
-                 (len(test_result.problem.solutions),
-                  len(test_result.problem.tests.ListInputFiles())))
-        Console.Print(line)
-        line = ""
-        last_problem = test_result.problem
-      line += " " * problem_name_width
-      line += " "
-      if test_result.solution.IsCorrect():
-        line += "\x1b[32m"
-      else:
-        line += "\x1b[33m"
-      line += test_result.solution.name.ljust(solution_name_width)
-      line += "\x1b[0m "
-      line += test_result.result
-      line += " "
-      if RimeOptions.use_indicator:
-        line += test_result.GetIndicator()
-        if test_result.detail:
-          line += "\x1b[31m%s\x1b[0m" % test_result.detail
-        if test_result.ruling_file:
-          line += " [%s]" % test_result.ruling_file
-        if test_result.HasTimeStats():
-          line += " (%s)" % test_result.GetTimeStats()
-      else:
-        if test_result.result == TestResult.PASSED:
-          if test_result.HasTimeStats():
-            line += "(%s)" % test_result.GetTimeStats()
-        else:
-          if test_result.detail:
-            line += "\x1b[31m%s\x1b[0m" % test_result.detail
-          else:
-            if test_result.ruling_file:
-              line += ("\x1b[31m%s\x1b[0m: \x1b[1m%s\x1b[0m" %
-                       (test_result.GetRejectReason(
-                            test_result.ruling_file),
-                        test_result.ruling_file))
-            else:
-              line += "\x1b[31mUnexpectedly Accepted\x1b[0m"
-      Console.Print(line)
-
-  def PrintErrorSummary(self):
-    for e in self.errors:
-      Console.PrintError(e)
-    for e in self.warnings:
-      Console.PrintWarning(e)
-    Console.Print(("Total %d errors, %d warnings" %
-                   (len(self.errors), len(self.warnings))))
-
-
-all_results = ActionResults()
-
-
-
 class RunResult(object):
+  """
+  Result of a single run.
+  """
 
-  OK = 'OK'
-  NG = 'NG'
-  RE = 'RE'
-  TLE = 'TLE'
+  OK = "OK"
+  NG = "Exitted Abnormally"
+  RE = "Runtime Error"
+  TLE = "Time Limit Exceeded"
 
   def __init__(self, status, time):
     self.status = status
     self.time = time
+
 
 
 class Code(object):
@@ -520,6 +521,7 @@ class Code(object):
     return RunResult(status, end_time-start_time)
 
 
+
 class CCode(Code):
 
   def __init__(self, src_name, src_dir, out_dir, flags):
@@ -530,6 +532,7 @@ class CCode(Code):
                          '-o', os.path.join(out_dir, self.exe_name),
                          src_name] + flags
     self.run_args = [os.path.join(self.out_dir, self.exe_name)]
+
 
 
 class CXXCode(Code):
@@ -544,6 +547,7 @@ class CXXCode(Code):
     self.run_args = [os.path.join(self.out_dir, self.exe_name)]
 
 
+
 class JavaCode(Code):
 
   def __init__(self, src_name, src_dir, out_dir,
@@ -556,6 +560,7 @@ class JavaCode(Code):
                          compile_flags + [src_name])
     self.run_args = (['java', '-Dline.separator=\n', '-cp', self.out_dir] +
                      run_flags + [mainclass])
+
 
 
 class ScriptCode(Code):
@@ -574,6 +579,7 @@ class ScriptCode(Code):
                       os.path.join(self.out_dir, self.src_name))
     result = RunResult(RunResult.OK, 0.0)
     return (result, "")
+
 
 
 class DiffCode(Code):
@@ -600,62 +606,132 @@ class DiffCode(Code):
       input=input, output=output, timeout=timeout)
 
 
+
 class ConfigurableObject(object):
+  """
+  Base class for configurable, i.e., associated with directory-config
+  pair under Rime's management, classes.
+  
+  """
+
+  # Class-specific config file name.
+  # Should be set in derived classes.
+  CONFIG_FILE = None
 
   @classmethod
   def CanLoadFrom(cls, base_dir):
+    """
+    Checks if this kind of object is constructable from the specified dir.
+    """
     return os.path.isfile(os.path.join(base_dir, cls.CONFIG_FILE))
 
-  def __init__(self, name, base_dir, parent):
+  def __init__(self, name, base_dir, parent, *args, **kwargs):
+    """
+    Loads config file and constructs a new instance of
+    configured object.
+    """
     self.name = name
     self.base_dir = base_dir
     self.parent = parent
+    # Set full name.
+    # Full name is normally path-like string separated with "/".
     if name is None:
       self.fullname = None
     elif parent is None or parent.fullname is None:
       self.fullname = name
     else:
       self.fullname = parent.fullname + "/" + name
+    # Locate config file.
     self.config_file = os.path.join(base_dir, self.CONFIG_FILE)
     real_config_file = self.config_file
     if not os.path.isfile(real_config_file):
       real_config_file = os.devnull
+    # Setup input/output directionaries and evaluate config.
     self.config = dict()
-    self.__export_dict = dict()
-    self._PreLoad()
+    self._export_dict = dict()
+    self._PreLoad(*args, **kwargs)
+    # Export functions marked with @Export.
     for name in dir(self):
       try:
         attr = getattr(self, name)
-        self.__export_dict[attr.im_func.__export_config] = attr
+        self._export_dict[attr.im_func._export_config] = attr
       except:
         pass
+    # Evaluate config.
     try:
       f = open(real_config_file, 'rb')
       script = f.read()
       code = compile(script, self.config_file, 'exec')
-      exec(code, self.__export_dict, self.config)
+      exec(code, self._export_dict, self.config)
     finally:
       try:
         f.close()
       except:
         pass
-    self._PostLoad()
+    self._PostLoad(*args, **kwargs)
 
-  def _PreLoad(self):
+  def _PreLoad(self, *args, **kwargs):
+    """
+    Called just before evaluation of config.
+    Should setup symbols to export via self._export_dict.
+    """
     pass
 
-  def _PostLoad(self):
+  def _PostLoad(self, *args, **kwargs):
+    """
+    Called just after evaluation of config.
+    Do some post-processing of configs here.
+    """
     pass
+
+  @classmethod
+  def Export(cls, name):
+    """
+    Decorator to mark methods "to be exported".
+    """
+    def ExportImpl(f):
+      f._export_config = name
+    return ExportImpl
+
+
+class TargetObjectBase(ConfigurableObject):
+  """
+  ConfigurableObject with some utility methods for
+  target objects.
+  """
+
+  def __init__(self, name, base_dir, parent, options, errors, *args, **kwargs):
+    self.options = options
+    super(TargetObjectBase, self).__init__(name, base_dir, parent, errors, *args, **kwargs)
+
+  def FindByBaseDir(self, base_dir):
+    """
+    Search whole subtree under this object and
+    return the object with matching base_dir.
+    """
+    if self.base_dir == base_dir:
+      return self
+    return None
 
   def SetCacheStamp(self):
+    """
+    Touch stamp file.
+    """
     return FileUtil.Touch(self.stamp_file)
 
   def GetCacheStamp(self):
+    """
+    Get timestamp of stamp file.
+    Returns None if not available.
+    """
     if not os.path.isfile(self.stamp_file):
       return None
     return FileUtil.GetModified(self.stamp_file)
 
   def IsBuildCached(self):
+    """
+    Check if cached build is not staled.
+    """
     stamp_mtime = self.GetCacheStamp()
     if stamp_mtime is None:
       return False
@@ -667,13 +743,10 @@ class ConfigurableObject(object):
         return False
     return True
 
-  @classmethod
-  def export(cls, name):
-    def ExportImpl(f):
-      f.__export_config = name
-    return ExportImpl
-
   def _AddCodeRegisterer(self, field_name, command_name):
+    """
+    Export {c,cxx,java,script}_hogehoge functions.
+    """
     multiple = (type(getattr(self, field_name)) is list)
     def GenericRegister(code):
       field = getattr(self, field_name)
@@ -714,159 +787,180 @@ class ConfigurableObject(object):
                  ("java_" + command_name, JavaRegister),
                  ("script_" + command_name, ScriptRegister)]
     for (name, func) in registers:
-      self.__export_dict[name] = func
+      self._export_dict[name] = func
       setattr(self, name, func)
 
-  def Build(self):
-    raise NotImplementedError()
-
-  def Test(self):
-    raise NotImplementedError()
-
-  def Clean(self):
-    raise NotImplementedError()
-
-  def Wiki(self):
-    raise NotImplementedError()
 
 
-
-class RimeRoot(ConfigurableObject):
+class RimeRoot(TargetObjectBase):
+  """
+  Represent the root of Rime tree.
+  """
 
   CONFIG_FILE = FileNames.RIMEROOT_FILE
 
-  def _PreLoad(self):
+  def _PreLoad(self, errors):
     self.root = self
 
-  def _PostLoad(self):
+  def _PostLoad(self, errors):
+    # Chain-load problems.
     self.problems = []
     for name in sorted(FileUtil.ListDir(self.base_dir)):
       dir = os.path.join(self.base_dir, name)
       if Problem.CanLoadFrom(dir):
-        problem = Problem(name, dir, self)
+        problem = Problem(name, dir, self, self.options, errors)
         self.problems.append(problem)
 
-  def FindByBaseDir(self, dir):
-    if self.base_dir == dir:
+  def FindByBaseDir(self, base_dir):
+    if self.base_dir == base_dir:
       return self
     for problem in self.problems:
-      found = problem.FindByBaseDir(dir)
-      if found:
-        return found
+      obj = problem.FindByBaseDir(base_dir)
+      if obj:
+        return obj
     return None
 
-  def Build(self):
+  def Build(self, errors):
+    """
+    Build all.
+    """
     success = True
     for problem in self.problems:
-      if not problem.Build():
+      if not problem.Build(errors):
         success = False
     return success
 
-  def Test(self):
+  def Test(self, errors):
+    """
+    Test all.
+    """
+    results = []
+    for problem in self.problems:
+      results.extend(problem.Test(errors))
+    return results
+
+  def Clean(self, errors):
+    """
+    Clean all.
+    """
     success = True
     for problem in self.problems:
-      if not problem.Test():
+      if not problem.Clean(errors):
         success = False
     return success
 
-  def Clean(self):
-    success = True
-    for problem in self.problems:
-      if not problem.Clean():
-        success = False
-    return success
 
-  def Wiki(self):
-    self.Test()
-    wiki = PukiWikiGenerator.Generate()
-    print wiki
-    return True
 
-            
-
-class Problem(ConfigurableObject):
+class Problem(TargetObjectBase):
+  """
+  Represent a single problem.
+  """
 
   CONFIG_FILE = FileNames.PROBLEM_FILE
 
-  def _PreLoad(self):
+  def _PreLoad(self, errors):
     self.root = self.parent
     self.out_dir = os.path.join(self.base_dir, FileNames.RIME_OUT_DIR)
 
-  def _PostLoad(self):
+  def _PostLoad(self, errors):
+    # Read time limit.
     if 'TIME_LIMIT' not in self.config:
-      all_results.Error(self, "Time limit is not specified")
+      errors.Error(self, "Time limit is not specified")
     else:
       self.timeout = self.config['TIME_LIMIT']
+    # Chain-load solutions.
     self.solutions = []
     for name in sorted(FileUtil.ListDir(self.base_dir)):
       dir = os.path.join(self.base_dir, name)
       if Solution.CanLoadFrom(dir):
-        solution = Solution(name, dir, self)
+        solution = Solution(name, dir, self, self.options, errors)
         self.solutions.append(solution)
-    self._DetermineReferenceSolution()
+    self._SelectReferenceSolution(errors)
+    # Chain-load tests.
     self.tests = Tests(
       FileNames.TESTS_DIR,
       os.path.join(self.base_dir, FileNames.TESTS_DIR),
-      self)
+      self,
+      self.options,
+      errors)
 
-  def _DetermineReferenceSolution(self):
+  def _SelectReferenceSolution(self, errors):
+    """
+    Select a reference solution.
+    """
     self.reference_solution = None
     if 'REFERENCE_SOLUTION' not in self.config:
+      # If not explicitly specified, select one which is
+      # not marked as incorrect.
       for solution in self.solutions:
         if solution.IsCorrect():
           self.reference_solution = solution
           break
     else:
+      # If explicitly specified, just use it.
       reference_solution_name = self.config['REFERENCE_SOLUTION']
       for solution in self.solutions:
         if solution.name == reference_solution_name:
           self.reference_solution = solution
           break
       if self.reference_solution is None:
-        all_results.Error(
+        errors.Error(
           self,
           ("Reference solution \"%s\" does not exist" %
            reference_solution_name))
 
-  def FindByBaseDir(self, dir):
-    if self.base_dir == dir:
+  def FindByBaseDir(self, base_dir):
+    if self.base_dir == base_dir:
       return self
     for solution in self.solutions:
-      found = solution.FindByBaseDir(dir)
-      if found:
-        return found
-    return self.tests.FindByBaseDir(dir)
+      obj = solution.FindByBaseDir(base_dir)
+      if obj:
+        return obj
+    return self.tests.FindByBaseDir(base_dir)
 
-  def Build(self):
+  def Build(self, errors):
+    """
+    Build all solutions and tests.
+    """
     success = True
     for solution in self.solutions:
-      if not solution.Build():
+      if not solution.Build(errors):
         success = False
-    if not self.tests.Build():
+    if not self.tests.Build(errors):
       success = False
     return success
 
-  def Test(self):
-    return self.tests.Test()
+  def Test(self, errors):
+    """
+    Run tests.
+    """
+    return self.tests.Test(errors)
 
-  def Clean(self):
+  def Clean(self, errors):
+    """
+    Clean all solutions and tests.
+    """
     Console.PrintAction("CLEAN", self)
     success = True
-    if not self.tests.Clean():
+    if not self.tests.Clean(errors):
       success = False
     for solution in self.solutions:
-      if not solution.Clean():
+      if not solution.Clean(errors):
         success = False
-    if not FileUtil.RemoveTree(self.out_dir):
+    if success and not FileUtil.RemoveTree(self.out_dir):
       success = False
     return success
 
 
-class Tests(ConfigurableObject):
+
+class Tests(TargetObjectBase):
+  """
+  Represent a test set for a problem.
+  """
 
   CONFIG_FILE = FileNames.TESTS_FILE
 
-  def _PreLoad(self):
+  def _PreLoad(self, errors):
     self.problem = self.parent
     self.root = self.parent.root
     self.src_dir = self.base_dir
@@ -879,137 +973,129 @@ class Tests(ConfigurableObject):
     self._AddCodeRegisterer('validator', 'validator')
     self._AddCodeRegisterer('judge', 'judge')
     if not os.path.isfile(self.config_file):
-      all_results.Warning(self,
-                          "%s file does not exist" % self.CONFIG_FILE)
+      errors.Warning(self,
+                     "%s does not exist" % self.CONFIG_FILE)
 
-  def _PostLoad(self):
+  def _PostLoad(self, errors):
     # TODO: print warnings if no validator / judge is specified.
     if self.judge is None:
       self.judge = DiffCode()
-    pass
 
-  def FindByBaseDir(self, dir):
-    if self.base_dir == dir:
-      return self
-    return None
-
-  def Build(self):
+  def Build(self, errors):
+    """
+    Build tests.
+    """
     #Console.PrintAction("BUILD", self)
     if self.IsBuildCached():
       #Console.PrintAction("BUILD", self, "(cached)", overwrite=True)
       return True
     if not FileUtil.RemoveTree(self.out_dir):
-      all_results.Error(self,
-                        "Failed to remove output dir")
+      errors.Error(self, "Failed to remove output dir")
       return False
     if not os.path.isdir(self.src_dir):
       if not FileUtil.MakeDir(self.out_dir):
-        all_results.Error(self,
-                          "Failed to create output dir")
+        errors.Error(self, "Failed to create output dir")
         return False
     else:
       if not FileUtil.CopyTree(self.src_dir, self.out_dir):
-        all_results.Error(self,
-                          "Failed to create output dir")
+        errors.Error(self, "Failed to create output dir")
         return False
-    if not self._CompileGenerator():
+    if not self._CompileGenerator(errors):
       return False
-    if not self._CompileValidator():
+    if not self._CompileValidator(errors):
       return False
-    if not self._CompileJudge():
+    if not self._CompileJudge(errors):
       return False
-    if not self._RunGenerator():
+    if not self._RunGenerator(errors):
       return False
-    if not self._RunValidator():
+    if not self._RunValidator(errors):
       return False
     if self.ListInputFiles():
-      if not self._CompileReferenceSolution():
+      if not self._CompileReferenceSolution(errors):
         return False
-      if not self._RunReferenceSolution():
+      if not self._RunReferenceSolution(errors):
         return False
     if not self.SetCacheStamp():
-      all_results.Error(self,
-                        "Failed to create stamp file")
+      errors.Error(self, "Failed to create stamp file")
       return False
     return True
 
-  def _CompileGenerator(self):
+  def _CompileGenerator(self, errors):
+    """
+    Compile all input generators.
+    """
     for generator in self.generators:
       if not generator.QUIET_COMPILE:
         Console.PrintAction("COMPILE", self, generator.src_name)
       (res, log) = generator.Compile()
       if res.status != RunResult.OK:
-        all_results.Error(self,
-                          "%s: Compile Error" % generator.src_name)
+        errors.Error(self,
+                     "%s: Compile Error" % generator.src_name)
         Console.PrintLog(log)
         return False
     return True
 
-  def _RunGenerator(self):
+  def _RunGenerator(self, errors):
+    """
+    Run all input generators.
+    """
     for generator in self.generators:
       Console.PrintAction("GENERATE", self, generator.src_name)
       res = generator.Run(
         args=[], cwd=self.out_dir,
         input=os.devnull, output=os.devnull, timeout=None)
       if res.status != RunResult.OK:
-        all_results.Error(
-          self, generator.src_name, "Runtime Error")
+        errors.Error(self,
+                     "%s: %s" % (generator.src_name, res.status))
         return False
     return True
 
-  def _CompileValidator(self):
+  def _CompileValidator(self, errors):
+    """
+    Compile input validator.
+    """
     if self.validator is None:
       return True
     if not self.validator.QUIET_COMPILE:
       Console.PrintAction("COMPILE", self, self.validator.src_name)
     (res, log) = self.validator.Compile()
     if res.status != RunResult.OK:
-      all_results.Error(self,
-                        "%s: Compile Error" % self.validator.src_name)
+      errors.Error(self,
+                   "%s: Compile Error" % self.validator.src_name)
       Console.PrintLog(log)
       return False
     return True
 
-  def _RunValidator(self):
+  def _RunValidator(self, errors):
+    """
+    Run input validator.
+    """
     Console.PrintAction("VALIDATE", self)
     infiles = self.ListInputFiles()
-    test_result = TestResult(None, None, infiles)
     for (i, infile) in enumerate(infiles):
-      test_result.SetStatus(infile, TestResult.RUN)
-      if RimeOptions.use_indicator:
-        Console.PrintAction(
-          "VALIDATE", self,
-          "%s [%s]" % (test_result.GetIndicator(), infile),
-          overwrite=True)
-      else:
-        Console.PrintAction(
-          "VALIDATE", self,
-          "[%d/%d] %s" % (i+1, len(infiles), infile),
-          overwrite=True)
+      Console.PrintAction(
+        "VALIDATE", self,
+        "[%d/%d] %s" % (i+1, len(infiles), infile),
+        overwrite=True)
       res = self.validator.Run(
         args=[], cwd=self.out_dir,
         input=os.path.join(self.out_dir, infile), output=os.devnull,
         timeout=None)
       if res.status == RunResult.NG:
-        all_results.Error(self, self.validator.src_name,
-                          "Validation Failed")
+        errors.Error(self,
+                     "%s: Validation Failed" % self.validator.src_name)
         return False
       elif res.status != RunResult.OK:
-        all_results.Error(self, self.validator.src_name,
-                          "Runtime Error on %s" % infile)
+        errors.Error(self,
+                     "%s: Validator Failed (%s)" % (self.validator.src_name, res.status))
         return False
-      test_result.SetStatus(infile, TestResult.AC)
-    if RimeOptions.use_indicator:
-      Console.PrintAction(
-        "VALIDATE", self, test_result.GetIndicator(),
-        overwrite=True)
-    else:
-      Console.PrintAction(
-        "VALIDATE", self, TestResult.PASSED,
-        overwrite=True)
+    Console.PrintAction("VALIDATE", self, "PASSED", overwrite=True)
     return True
 
-  def _CompileJudge(self):
+  def _CompileJudge(self, errors):
+    """
+    Compile judge.
+    """
     if self.judge is None:
       return True
     if not self.judge.QUIET_COMPILE:
@@ -1018,199 +1104,197 @@ class Tests(ConfigurableObject):
                           self.judge.src_name)
     (res, log) = self.judge.Compile()
     if res.status != RunResult.OK:
-      all_results.Error(self,
-                        "%s: Compile Error" % self.judge.src_name)
+      errors.Error(self, "%s: Compile Error" % self.judge.src_name)
       Console.PrintLog(log)
       return False
     return True
 
-  def _CompileReferenceSolution(self):
+  def _CompileReferenceSolution(self, errors):
+    """
+    Compile the reference solution.
+    """
     reference_solution = self.problem.reference_solution
     if reference_solution is None:
-      all_results.Error(self,
-                        "Reference solution is not available")
+      errors.Error(self, "Reference solution is not available")
       return False
-    return reference_solution.Build()
+    return reference_solution.Build(errors)
 
-  def _RunReferenceSolution(self):
+  def _RunReferenceSolution(self, errors):
+    """
+    Run the reference solution to generate reference outputs.
+    """
     reference_solution = self.problem.reference_solution
     if reference_solution is None:
-      all_results.Error(self,
-                        "Reference solution is not available")
+      errors.Error(self, "Reference solution is not available")
       return False
     Console.PrintAction("REFRUN", reference_solution)
     infiles = self.ListInputFiles()
-    test_result = TestResult(None, None, infiles)
     for (i, infile) in enumerate(infiles):
       difffile = os.path.splitext(infile)[0] + FileNames.DIFF_EXT
       if os.path.isfile(os.path.join(self.out_dir, difffile)):
-        test_result.SetStatus(infile, TestResult.AC)
         continue
-      test_result.SetStatus(infile, TestResult.RUN)
-      if RimeOptions.use_indicator:
-        Console.PrintAction(
-          "REFRUN", reference_solution,
-          "%s [%s]" % (test_result.GetIndicator(), infile),
-          overwrite=True)
-      else:
-        Console.PrintAction(
-          "REFRUN", reference_solution,
-          "[%d/%d] %s" % (i+1, len(infiles), infile),
-          overwrite=True)
+      Console.PrintAction(
+        "REFRUN", reference_solution,
+        "[%d/%d] %s" % (i+1, len(infiles), infile),
+        overwrite=True)
       res = reference_solution.Run(
         args=[], cwd=self.out_dir,
         input=os.path.join(self.out_dir, infile),
         output=os.path.join(self.out_dir, difffile),
         timeout=None)
       if res.status != RunResult.OK:
-        all_results.Error(reference_solution,
-                          "Runtime Error on %s" % infile)
+        errors.Error(reference_solution, res.status)
         return False
-      test_result.SetStatus(infile, TestResult.AC)
-    if RimeOptions.use_indicator:
-      Console.PrintAction(
-        "REFRUN", reference_solution, test_result.GetIndicator(),
-        overwrite=True)
-    else:
-      Console.PrintAction(
-        "REFRUN", reference_solution,
-        overwrite=True)
+    Console.PrintAction(
+      "REFRUN", reference_solution,
+      overwrite=True)
     return True
 
-  def Test(self, solution=None):
-    if not self.Build():
+  def Test(self, errors):
+    """
+    Test all solutions.
+    """
+    if not self.Build(errors):
       return False
-    if solution is not None:
-      return self._TestOneSolution(solution)
-    success = True
+    results = []
     for solution in self.problem.solutions:
-      if not self._TestOneSolution(solution):
-        success = False
-    return success
+      results.append(self.TestSolution(solution, errors))
+    return results
 
-  def _TestOneSolution(self, solution):
-    if not solution.Build():
-      test_result = TestResult(self.problem, solution, [])
-      test_result.result = TestResult.FAILED
-      test_result.detail = "Compile Error"
-      all_results.AddTestResult(test_result)
-      return False
-    cookie = solution.GetCacheStamp()
+  def TestSolution(self, solution, errors):
+    """
+    Test a single solution.
+    """
+    if not solution.Build(errors):
+      result = TestResult(self.problem, solution, [])
+      result.passed = False
+      result.detail = "Compile Error"
+      return result
     Console.PrintAction("TEST", solution)
-    infiles = self.ListInputFiles()
-    test_result = TestResult(self.problem, solution, infiles)
-    test_result.result = TestResult.PASSED
-    error = None
-    any_cached = False
     if not solution.IsCorrect() and solution.challenge_cases:
-      challenge_cases = self._SortInputFiles(solution.challenge_cases)
-      all_exists = True
-      for infile in challenge_cases:
-        if infile not in infiles:
-          results.Error(solution,
-                            "Challenge case not found: %s" % infile)
-          all_exists = False
-      if not all_exists:
-        return False
-      for (i, infile) in enumerate(challenge_cases):
-        test_result.SetStatus(infile, TestResult.RUN)
-        if RimeOptions.use_indicator:
-          Console.PrintAction(
-            "TEST", solution,
-            "%s [%s]" % (test_result.GetIndicator(), infile),
-            overwrite=True)
-        else:
-          Console.PrintAction(
-            "TEST", solution,
-            "[%d/%d] %s" % (i+1, len(infiles), infile),
-            overwrite=True)
-        (status, time, cached) = self._TestOneCase(
-          solution, infile, cookie)
-        if cached:
-          any_cached = True
-        test_result.SetStatus(infile, status)
-        if status == TestResult.ERR:
-          all_results.Error(solution,
-                            "Validation Error on %s" % infile,
-                            quiet=True)
-          test_result.ruling_file = infile
-          test_result.result = TestResult.FAILED
-          break
-        if status == TestResult.AC:
-          all_results.Error(solution,
-                            "Unexpectedly Accepted for %s" % infile,
-                            quiet=True)
-          test_result.ruling_file = infile
-          test_result.result = TestResult.FAILED
-          break
+      (result, any_cached) = self._TestSolutionWithChallengeCases(solution, errors)
     else:
-      for (i, infile) in enumerate(infiles):
-        test_result.SetStatus(infile, TestResult.RUN)
-        if RimeOptions.use_indicator:
-          Console.PrintAction(
-            "TEST", solution,
-            "%s [%s]" % (test_result.GetIndicator(), infile),
-            overwrite=True)
-        else:
-          Console.PrintAction(
-            "TEST", solution,
-            "[%d/%d] %s" % (i+1, len(infiles), infile),
-            overwrite=True)
-        (status, time, cached) = self._TestOneCase(
-          solution, infile, cookie)
-        if cached:
-          any_cached = True
-        test_result.SetStatus(infile, status)
-        if status == TestResult.ERR:
-          all_results.Error(solution,
-                            "Validation Error on %s" % infile,
-                            quiet=True)
-          test_result.ruling_file = infile
-          test_result.result = TestResult.FAILED
-          break
-        if status != TestResult.AC:
-          if not solution.IsCorrect():
-            break
-          all_results.Error(
-            solution,
-            "%s on %s" % (test_result.GetRejectReason(infile),
-                          infile),
-            quiet=True)
-          test_result.ruling_file = infile
-          test_result.result = TestResult.FAILED
-          break
-        test_result.SetTime(infile, time)
-      if not solution.IsCorrect() and test_result.IsAllAccepted():
-        test_result.result = TestResult.FAILED
+      (result, any_cached) = self._TestSolutionWithAllCases(solution, errors)
     status_line = ""
-    if RimeOptions.use_indicator:
-      status_line += test_result.GetIndicator()
-      if test_result.ruling_file:
-        status_line += " [%s]" % test_result.ruling_file
+    if result.passed:
+      status_line += "PASSED"
+      if result.IsAllAccepted():
+        status_line += " (%.2f/%.2f)" % (result.GetMaxTime(), result.GetTotalTime())
+      # TODO: show something when challenge succeeded.
     else:
-      if test_result.result == TestResult.PASSED:
-        status_line += TestResult.PASSED
-        if test_result.HasTimeStats():
-          status_line += " (%s)" % test_result.GetTimeStats()
+      if result.ruling_file:
+        # TODO: use console codes.
+        status_line += ("\x1b[31m%s\x1b[0m: \x1b[1m%s\x1b[0m" %
+                        (result.cases[result.ruling_file].verdict,
+                         test_result.ruling_file))
       else:
-        if test_result.ruling_file:
-          status_line += ("\x1b[31m%s\x1b[0m: \x1b[1m%s\x1b[0m" %
-                          (test_result.GetRejectReason(
-                               test_result.ruling_file),
-                           test_result.ruling_file))
-        else:
-          status_line += "Unexpectedly Accepted"
+        status_line += "Unexpectedly Accepted"
     if any_cached:
       status_line += " (cached)"
     Console.PrintAction("TEST", solution, status_line, overwrite=True)
-    all_results.AddTestResult(test_result)
-    return (test_result.result == TestResult.PASSED)
+    return result
+
+  def _TestSolutionWithChallengeCases(self, solution, errors):
+    """
+    Test a wrong solution which has explicitly-specified challenge cases.
+    """
+    infiles = self.ListInputFiles()
+    challenge_cases = self._SortInputFiles(solution.challenge_cases)
+    cookie = solution.GetCacheStamp()
+    result = TestResult(self.problem, solution, challenge_cases)
+    # Ensure all challenge cases exist.
+    all_exists = True
+    for infile in challenge_cases:
+      if infile not in infiles:
+        errors.Error(solution,
+                     "Challenge case not found: %s" % infile)
+        all_exists = False
+    if not all_exists:
+      result.passed = False
+      result.detail = "Challenge case not found"
+      return (result, False)
+    # Try challenge cases.
+    any_cached = False
+    for (i, infile) in enumerate(challenge_cases):
+      Console.PrintAction(
+        "TEST", solution,
+        "[%d/%d] %s" % (i+1, len(challenge_cases), infile),
+        overwrite=True)
+      (verdict, time, cached) = self._TestOneCase(
+        solution, infile, cookie)
+      if cached:
+        any_cached = True
+      result.cases[infile].verdict = verdict
+      if verdict == TestResult.AC:
+        errors.Error(solution,
+                     "Unexpectedly Accepted: %s" % infile,
+                     quiet=True)
+        result.ruling_file = infile
+        result.passed = False
+        break
+      elif verdict not in (TestResult.WA, TestResult.TLE, TestResult.RE):
+        errors.Error(solution,
+                     "Validation Error: %s" % infile,
+                     quiet=True)
+        result.ruling_file = infile
+        result.passed = False
+        break
+    if result.passed is None:
+      result.passed = True
+    return (result, any_cached)
+
+  def _TestSolutionWithAllCases(self, solution, errors):
+    """
+    Test a solution without challenge cases.
+    The solution can be marked as wrong but without challenge cases.
+    """
+    infiles = self.ListInputFiles()
+    cookie = solution.GetCacheStamp()
+    result = TestResult(self.problem, solution, infiles)
+    # Try all cases.
+    any_cached = False
+    for (i, infile) in enumerate(infiles):
+      Console.PrintAction(
+        "TEST", solution,
+        "[%d/%d] %s" % (i+1, len(infiles), infile),
+        overwrite=True)
+      (verdict, time, cached) = self._TestOneCase(
+        solution, infile, cookie)
+      if cached:
+        any_cached = True
+      result.cases[infile].verdict = verdict
+      if verdict not in (TestResult.AC, TestResult.WA, TestResult.TLE, TestResult.RE):
+        errors.Error(solution,
+                     "Validation Error: %s" % infile,
+                     quiet=True)
+        result.ruling_file = infile
+        result.passed = False
+        break
+      elif verdict != TestResult.AC:
+        result.ruling_file = infile
+        if solution.IsCorrect():
+          errors.Error(solution,
+                       "%s: %s" % (verdict, infile),
+                       quiet=True)
+          result.passed = False
+        break
+      result.cases[infile].time = time
+    if not solution.IsCorrect() and result.IsAllAccepted():
+      result.passed = False
+    if result.passed is None:
+      result.passed = True
+    return (result, any_cached)
 
   def _TestOneCase(self, solution, infile, cookie):
+    """
+    Test a solution with one case.
+    Cache results if option is set.
+    Return (verdict, time, cached).
+    """
     cachefile = os.path.join(
       solution.out_dir,
       os.path.splitext(infile)[0] + FileNames.CACHE_EXT)
-    if RimeOptions.cache_tests:
+    if self.options.cache_tests:
       if cookie is not None and os.path.isfile(cachefile):
         (cached_cookie, result) = FileUtil.PickleLoad(cachefile)
         if cached_cookie == cookie:
@@ -1220,6 +1304,11 @@ class Tests(ConfigurableObject):
     return tuple(list(result)+[False])
 
   def _TestOneCaseNoCache(self, solution, infile):
+    """
+    Test a solution with one case.
+    Never cache results.
+    Return (verdict, time).
+    """
     outfile = os.path.splitext(infile)[0] + FileNames.OUT_EXT
     difffile = os.path.splitext(infile)[0] + FileNames.DIFF_EXT
     judgefile = os.path.splitext(infile)[0] + FileNames.JUDGE_EXT
@@ -1246,11 +1335,17 @@ class Tests(ConfigurableObject):
       return (TestResult.WA, None)
     return (TestResult.AC, time)
 
-  def Clean(self):
+  def Clean(self, errors):
+    """
+    Remove test cases.
+    """
     Console.PrintAction("CLEAN", self)
     return FileUtil.RemoveTree(self.out_dir)
 
   def ListInputFiles(self):
+    """
+    Enumerate input files.
+    """
     infiles = []
     for infile in FileUtil.ListDir(self.out_dir, True):
       if not infile.endswith(FileNames.IN_EXT):
@@ -1261,6 +1356,9 @@ class Tests(ConfigurableObject):
     return self._SortInputFiles(infiles)
 
   def _SortInputFiles(self, infiles):
+    """
+    Compare input file names in a little bit smart way.
+    """
     infiles = infiles[:]
     def tokenize_cmp(a, b):
       def tokenize(s):
@@ -1273,11 +1371,14 @@ class Tests(ConfigurableObject):
 
 
 
-class Solution(ConfigurableObject):
+class Solution(TargetObjectBase):
+  """
+  Represents a single solution.
+  """
 
   CONFIG_FILE = FileNames.SOLUTION_FILE
 
-  def _PreLoad(self):
+  def _PreLoad(self, errors):
     self.problem = self.parent
     self.root = self.parent.root
     self.src_dir = self.base_dir
@@ -1286,13 +1387,14 @@ class Solution(ConfigurableObject):
     self.code = None
     self._AddCodeRegisterer('code', 'solution')
 
-  def _PostLoad(self):
+  def _PostLoad(self, errors):
     source_exts = {
       '.c': self.c_solution,
       '.cc': self.cxx_solution,
       '.cpp': self.cxx_solution,
       '.java': self.java_solution,
       }
+    # If the code is not explicitly specified, guess it.
     if self.code is None:
       src = None
       solution_func = None
@@ -1308,14 +1410,15 @@ class Solution(ConfigurableObject):
           src = name
           solution_func = source_exts[ext]
       if ambiguous:
-        all_results.Error(self,
-                          ("Multiple source files found; " +
-                           "specify explicitly in " +
-                           self.CONFIG_FILE))
+        errors.Error(self,
+                     ("Multiple source files found; " +
+                      "specify explicitly in " +
+                      self.CONFIG_FILE))
       elif src is None:
-        all_results.Error(self, "Source file not found")
+        errors.Error(self, "Source file not found")
       else:
         solution_func(src=src)
+    # Decide if this solution is correct or not.
     if 'CHALLENGE_CASES' in self.config:
       self.correct = False
       self.challenge_cases = self.config['CHALLENGE_CASES']
@@ -1323,15 +1426,16 @@ class Solution(ConfigurableObject):
       self.correct = True
       self.challenge_cases = None
 
-  def FindByBaseDir(self, dir):
-    if self.base_dir == dir:
-      return self
-    return None
-
   def IsCorrect(self):
+    """
+    Returns whether this is correct solution.
+    """
     return self.correct
 
-  def Build(self):
+  def Build(self, errors):
+    """
+    Build this solution.
+    """
     #Console.PrintAction("BUILD", self)
     if self.IsBuildCached():
       #Console.PrintAction("BUILD", self, "(cached)", overwrite=True)
@@ -1340,155 +1444,201 @@ class Solution(ConfigurableObject):
       Console.PrintAction("COMPILE", self)
     (res, log) = self.code.Compile()
     if res.status != RunResult.OK:
-      all_results.Error(self, "Compile Error")
+      errors.Error(self, "Compile Error")
       Console.PrintLog(log)
       return False
     if log:
-      all_results.Warning(self, "Compiler warnings found")
+      errors.Warning(self, "Compiler warnings found")
       Console.PrintLog(log)
     if not self.SetCacheStamp():
-      all_results.Error(self,
-                        "Failed to create stamp file")
+      errors.Error(self,
+                   "Failed to create stamp file")
       return False
     return True
 
-  def Test(self):
-    return self.problem.tests.Test(self)
+  def Test(self, errors):
+    """
+    Test this solution.
+    """
+    return self.problem.tests.TestSolution(self, errors)
 
   def Run(self, args, cwd, input, output, timeout):
+    """
+    Run this solution.
+    """
     return self.code.Run(args=args, cwd=cwd,
                          input=input, output=output, timeout=timeout)
 
-  def Clean(self):
+  def Clean(self, errors):
+    """
+    Clean this solution.
+    """
     Console.PrintAction("CLEAN", self)
     return self.code.Clean()
 
 
-class PukiWikiGenerator(object):
-
-  CELL_GOOD = "BGCOLOR(#ccffcc):○"
-  CELL_NEUTRAL = "BGCOLOR(#ffffcc):△"
-  CELL_BAD = "BGCOLOR(#ffcccc):×"
-  CELL_NA = "BGCOLOR(#cccccc):－"
-
-  @classmethod
-  def Generate(cls):
-    test_results = sorted(all_results.test_results, TestResult.Compare)
-    wiki = "// Generated by Rime\n"
-    wiki += "|Problem|Solution||Reason|h\n"
-    last_problem = None
-    for test_result in test_results:
-      if last_problem is test_result.problem:
-        wiki += "|^"
-      else:
-        wiki += "|%s" % test_result.problem.name
-      if test_result.solution.IsCorrect():
-        wiki += "|%s" % test_result.solution.name
-        if test_result.solution is test_result.problem.reference_solution:
-          wiki += "(*)"
-      else:
-        wiki += "|&color(#888888){%s};" % test_result.solution.name
-      if test_result.result == TestResult.PASSED:
-        wiki += "|%s" % cls.CELL_GOOD
-      else:
-        wiki += "|%s" % cls.CELL_BAD
-      if test_result.detail:
-        wiki += "|%s" % test_result.detail
-      elif test_result.result == TestResult.FAILED:
-        ruling_file = test_result.ruling_file
-        reason = test_result.GetRejectReason(ruling_file)
-        wiki += "|%s (%s)" % (reason, ruling_file)
-      else:
-        wiki += "|"
-      wiki += "|\n"
-      last_problem = test_result.problem
-    return wiki
-
 
 class Rime(object):
-
-  COMMANDS = ['build', 'test', 'clean']
+  """
+  The main class of Rime.
+  """
 
   def Main(self, args):
+    """
+    Main method called when invoked as stand-alone script.
+    """
+    # Banner.
     Console.Print("Rime: Tool for Programming Contest Organizers")
-    Console.Print("")
-    self._ParseArgs(args)
-    self._LoadConfig()
-    if all_results.HasError():
-      Console.PrintTitle("SUMMARY")
-      all_results.PrintErrorSummary()
-      sys.exit(1)
-    if self.cmd is None:
-      Console.PrintError("No command specified")
-      return
-    if self.cmd not in self.COMMANDS:
-      Console.PrintError("Unknown command: %s" % self.cmd)
-      sys.exit(1)
-    method_name = self.cmd.title()
-    method = getattr(self.target, method_name)
-    try:
-      method()
-    except NotImplementedError:
-      Console.PrintError("Command %s is not applicable here" % self.cmd)
-      sys.exit(1)
-    Console.PrintTitle("SUMMARY")
-    all_results.PrintTestSummary()
-    all_results.PrintErrorSummary()
+    Console.Print()
+    # Parse arguments.
+    (cmd, params, options) = self._ParseArgs(args)
+    if cmd is None or options.show_help:
+      self.PrintHelp()
+      return 0
+    # Try to load config files.
+    errors = ErrorRecorder()
+    root = self.LoadRoot(os.getcwd(), options, errors)
+    if not root:
+      Console.PrintError("RIMEROOT not found. Make sure you are in Rime subtree.")
+      return 1
+    if errors.HasError():
+      Console.PrintError("Encountered error on loading config files.")
+      return 1
+    # Decide target object.
+    # Note: currently all commands recognizes first parameter as base_dir.
+    if params:
+      base_dir = os.path.abspath(params[0])
+      params = params[1:]
+    else:
+      base_dir = root.base_dir
+    obj = root.FindByBaseDir(base_dir)
+    if not obj:
+      Console.PrintError("Target directory is not managed by Rime.")
+      return 1
+    # Call.
+    if cmd == 'build':
+      success = obj.Build(errors)
+      Console.Print("Finished Build.")
+      Console.Print()
+    elif cmd == 'test':
+      results = obj.Test(errors)
+      Console.Print("Finished Test.")
+      Console.Print()
+      self.PrintTestSummary(results)
+    elif cmd == 'clean':
+      success = obj.Clean(errors)
+      Console.Print("Finished Clean.")
+      Console.Print()
+    else:
+      Console.PrintError("Unknown command: %s" % cmd)
+      return 1
+    errors.PrintSummary()
+    return 0
 
-  def _PrintHelp(self):
+  def LoadRoot(self, cwd, options, errors):
+    """
+    Load configs and return RimeRoot instance.
+    Location of root directory is searched upward from cwd.
+    If RIMEROOT cannot be found, return None.
+    """
+    dir = cwd
+    while not RimeRoot.CanLoadFrom(dir):
+      (head, tail) = os.path.split(dir)
+      if head == dir:
+        return None
+      dir = head
+    root = RimeRoot(None, dir, None, options, errors)
+    return root
+
+  def PrintHelp(self):
+    """
+    Just print help message.
+    """
     print HELP_MESSAGE
 
+  def PrintTestSummary(self, results):
+    if len(results) == 0:
+      return
+    problem_name_width = max(
+      map(lambda t: len(t.problem.name), results))
+    solution_name_width = max(
+      map(lambda t: len(t.solution.name), results))
+    last_problem = None
+    # TODO: use console codes.
+    for result in sorted(results, TestResult.CompareForListing):
+      line = ""
+      if last_problem is not result.problem:
+        line += "\x1b[36m"
+        line += result.problem.name.ljust(problem_name_width)
+        line += "\x1b[0m"
+        line += " "
+        line += ("%d solutions, %d tests" %
+                 (len(result.problem.solutions),
+                  len(result.problem.tests.ListInputFiles())))
+        Console.Print(line)
+        line = ""
+        last_problem = result.problem
+      line += " " * problem_name_width
+      line += " "
+      if result.solution.IsCorrect():
+        line += "\x1b[32m"
+      else:
+        line += "\x1b[33m"
+      line += result.solution.name.ljust(solution_name_width)
+      line += "\x1b[0m "
+      if result.passed:
+        line += "PASSED"
+      else:
+        line += "FAILED"
+      line += " "
+      if result.passed:
+        if result.IsAllAccepted():
+          line += "(%.2f/%.2f)" % (result.GetMaxTime(), result.GetTotalTime())
+      else:
+        if result.detail:
+          line += "\x1b[31m%s\x1b[0m" % result.detail
+        else:
+          if result.ruling_file:
+            line += ("\x1b[31m%s\x1b[0m: \x1b[1m%s\x1b[0m" %
+                     result.cases[result.ruling_file].result)
+          else:
+            line += "\x1b[31mUnexpectedly Accepted\x1b[0m"
+      Console.Print(line)
+
   def _ParseArgs(self, args):
-    parser = optparse.OptionParser(usage="%prog command [dir] [options]")
+    """
+    Parse args and return (cmd, params, options) tuple.
+    """
+    parser = optparse.OptionParser(add_help_option=False)
+    parser.add_option('-h', '--help', dest='show_help',
+                      default=False, action="store_true")
     parser.add_option('-I', '--indicator', dest='use_indicator',
                       default=False, action="store_true")
     parser.add_option('-C', '--cache-tests', dest='cache_tests',
                       default=False, action="store_true")
-    (self.options, self.args) = parser.parse_args(args[1:])
-    for name in dir(RimeOptions):
-      if name.startswith('_'):
-        continue
-      setattr(RimeOptions, name, getattr(self.options, name))
-    self.cmd = self.args[0] if self.args else None
-    if not self.cmd or self.cmd == 'help':
-      self._PrintHelp()
-      sys.exit(0)
-    if len(self.args) <= 1:
-      self.target_dir = None
-      self.params = []
+    (options, args) = parser.parse_args(args[1:])
+    cmd = args[0].lower() if args else None
+    if len(args) >= 2:
+      params = args[2:]
     else:
-      self.target_dir = os.path.abspath(self.args[1])
-      self.params = self.args[2:]
+      params = []
+    return (cmd, params, options)
 
-  def _LoadConfig(self):
-    if self.target_dir is None:
-      dir = os.getcwd()
-    else:
-      dir = self.target_dir
-    while not RimeRoot.CanLoadFrom(dir):
-      (head, tail) = os.path.split(dir)
-      if head == dir:
-        Console.PrintError("%s not found" % FileNames.RIMEROOT_FILE)
-        sys.exit(1)
-      dir = head
-    self.root = RimeRoot(None, dir, None)
-    if self.target_dir is None:
-      self.target_dir = self.root.base_dir
-    self.target = self.root.FindByBaseDir(self.target_dir)
-    if self.target is None:
-      all_results.Error(None,
-                        "Specified directory is not maintained by Rime")
 
 
 def main():
   try:
+    # Instanciate Rime class and call Main().
     rime = Rime()
-    rime.Main(sys.argv)
-  except KeyboardInterrupt:
-    sys.exit(1)
+    ret = rime.Main(sys.argv)
+    sys.exit(ret)
   except SystemExit:
     raise
+  except KeyboardInterrupt:
+    # Suppress stack trace when interrupted by Ctrl-C
+    sys.exit(1)
   except:
+    # Print stack trace for debug.
     exc = sys.exc_info()
     sys.excepthook(*exc)
     sys.exit(1)
