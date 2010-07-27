@@ -1631,15 +1631,28 @@ class Rime(object):
             row += [" Unexpectedly Accepted"]
       Console.Print(*row)
 
-  def _ParseArgs(self, args):
+  def GetOptionParser(self):
     """
-    Parse args and return (cmd, params, options) tuple.
+    Construct optparse.OptionParser object for Rime.
     """
     parser = optparse.OptionParser(add_help_option=False)
     parser.add_option('-h', '--help', dest='show_help',
                       default=False, action="store_true")
     parser.add_option('-C', '--cache-tests', dest='cache_tests',
                       default=False, action="store_true")
+    return parser
+
+  def GetDefaultOptions(self):
+    """
+    Get default options object.
+    """
+    return self.GetOptionParser().get_default_values()
+
+  def _ParseArgs(self, args):
+    """
+    Parse args and return (cmd, params, options) tuple.
+    """
+    parser = self.GetOptionParser()
     (options, args) = parser.parse_args(args[1:])
     cmd = args[0].lower() if args else None
     if len(args) >= 2:
