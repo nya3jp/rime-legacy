@@ -82,38 +82,21 @@ class FileUtil(object):
 
   @classmethod
   def CopyFile(cls, src, dst):
-    try:
-      shutil.copy(src, dst)
-      return True
-    except:
-      return False
+    shutil.copy(src, dst)
 
   @classmethod
   def MakeDir(cls, dir):
-    try:
-      if not os.path.isdir(dir):
-        os.makedirs(dir)
-      return True
-    except:
-      return False
+    if not os.path.isdir(dir):
+      os.makedirs(dir)
 
   @classmethod
   def CopyTree(cls, src, dst):
-    try:
-      shutil.copytree(src, dst)
-      return True
-    except:
-      raise
-      return False
+    shutil.copytree(src, dst)
 
   @classmethod
   def RemoveTree(cls, dir):
-    try:
-      if os.path.exists(dir):
-        shutil.rmtree(dir)
-      return True
-    except:
-      return False
+    if os.path.exists(dir):
+      shutil.rmtree(dir)
 
   @classmethod
   def GetModified(cls, file):
@@ -121,49 +104,50 @@ class FileUtil(object):
 
   @classmethod
   def Touch(cls, file):
-    try:
-      f = open(file, 'a')
-      f.close()
-      return True
-    except:
-      return False
+    open(file, 'a').close()
 
   @classmethod
   def ListDir(cls, dir, recurse=False):
-    files = os.listdir(dir)
-    if recurse:
-      for subfile in files[:]:
-        subdir = os.path.join(dir, subfile)
-        if os.path.isdir(subdir):
-          files += [os.path.join(subfile, s)
-                    for s in cls.ListDir(subdir, True)]
+    try:
+      files = os.listdir(dir)
+      if recurse:
+        for subfile in files[:]:
+          subdir = os.path.join(dir, subfile)
+          if os.path.isdir(subdir):
+            files += [os.path.join(subfile, s)
+                      for s in cls.ListDir(subdir, True)]
+    except:
+      pass
     return files
 
   @classmethod
   def PickleSave(cls, obj, file):
     try:
+      f = None
       f = open(file, 'w')
       pickle.dump(obj, f)
-      return True
     except:
-      try:
-        f.close()
-      except:
-        pass
-      return False
+      if f is not None:
+        try:
+          f.close()
+        except:
+          pass
+      raise
 
   @classmethod
   def PickleLoad(cls, file):
     try:
+      f = None
       f = open(file, 'r')
       obj = pickle.load(f)
       return obj
     except:
-      try:
-        f.close()
-      except:
-        pass
-      return None
+      if f is not None:
+        try:
+          f.close()
+        except:
+          pass
+      raise
 
 
 
@@ -311,6 +295,16 @@ class ErrorRecorder(object):
     if not quiet:
       Console.PrintWarning(reason)
 
+  def Exception(self, source, e=None, quiet=False):
+    """
+    Emit an exception error.
+    If e is not given, use current context.
+    If quiet is True it is not printed immediately, but shown in summary.
+    """
+    if e is None:
+      e = sys.exc_info()[1]
+    self.Error(self, source, str(e), quiet)
+
   def HasError(self):
     return bool(self.errors)
 
@@ -372,6 +366,7 @@ class TestResult(object):
     self.passed = None
     self.detail = None
     self.ruling_file = None
+    self.cached = False
 
   def IsAllAccepted(self):
     """
@@ -445,18 +440,26 @@ class Code(object):
     FileUtil.MakeDir(self.out_dir)
 
   def Compile(self):
-    self.MakeOutDir()
-    result = self._ExecForCompile(args=self.compile_args)
-    log = self._ReadCompileLog()
-    return (result, log)
+    try:
+      self.MakeOutDir()
+      result = self._ExecForCompile(args=self.compile_args)
+      log = self._ReadCompileLog()
+      return (result, log)
+    except Exception, e:
+      result = RunResult(str(e), None)
+      return (result, "")
 
   def Run(self, args, cwd, input, output, timeout):
-    return self._ExecForRun(
-      args=self.run_args+args, cwd=cwd,
-      input=input, output=output, timeout=timeout)
+    try:
+      return self._ExecForRun(
+        args=self.run_args+args, cwd=cwd,
+        input=input, output=output, timeout=timeout)
+    except Exception, e:
+      result = RunResult(str(e), None)
+      return (result, "")
 
   def Clean(self):
-    return FileUtil.RemoveTree(self.out_dir)
+    FileUtil.RemoveTree(self.out_dir)
 
   def _ExecForCompile(self, args):
     try:
@@ -574,10 +577,13 @@ class ScriptCode(Code):
     self.run_args = [interpreter, os.path.join(self.out_dir, self.src_name)]
 
   def Compile(self):
-    self.MakeOutDir()
-    FileUtil.CopyFile(os.path.join(self.src_dir, self.src_name),
-                      os.path.join(self.out_dir, self.src_name))
-    result = RunResult(RunResult.OK, 0.0)
+    try:
+      self.MakeOutDir()
+      FileUtil.CopyFile(os.path.join(self.src_dir, self.src_name),
+                        os.path.join(self.out_dir, self.src_name))
+      result = RunResult(RunResult.OK, 0.0)
+    except Exception, e:
+      result = RunResult(str(e), None)
     return (result, "")
 
 
@@ -717,7 +723,7 @@ class TargetObjectBase(ConfigurableObject):
     """
     Touch stamp file.
     """
-    return FileUtil.Touch(self.stamp_file)
+    FileUtil.Touch(self.stamp_file)
 
   def GetCacheStamp(self):
     """
@@ -752,6 +758,7 @@ class TargetObjectBase(ConfigurableObject):
       field = getattr(self, field_name)
       if not multiple:
         if field is not None:
+          # TODO: remove this all_result reference.
           all_results.Error(self,
                             "Multiple %ss specified" % command_name)
           return
@@ -947,7 +954,11 @@ class Problem(TargetObjectBase):
     for solution in self.solutions:
       if not solution.Clean(errors):
         success = False
-    if success and not FileUtil.RemoveTree(self.out_dir):
+    if success:
+      try:
+        FileUtil.RemoveTree(self.out_dir)
+      except:
+        errors.Exception(self)
       success = False
     return success
 
@@ -989,16 +1000,22 @@ class Tests(TargetObjectBase):
     if self.IsBuildCached():
       #Console.PrintAction("BUILD", self, "(cached)", overwrite=True)
       return True
-    if not FileUtil.RemoveTree(self.out_dir):
-      errors.Error(self, "Failed to remove output dir")
+    try:
+      FileUtil.RemoveTree(self.out_dir)
+    except:
+      errors.Exception(self)
       return False
     if not os.path.isdir(self.src_dir):
-      if not FileUtil.MakeDir(self.out_dir):
-        errors.Error(self, "Failed to create output dir")
+      try:
+        FileUtil.MakeDir(self.out_dir)
+      except:
+        errors.Exception(self)
         return False
     else:
-      if not FileUtil.CopyTree(self.src_dir, self.out_dir):
-        errors.Error(self, "Failed to create output dir")
+      try:
+        FileUtil.CopyTree(self.src_dir, self.out_dir)
+      except:
+        errors.Exception(self)
         return False
     if not self._CompileGenerator(errors):
       return False
@@ -1015,8 +1032,10 @@ class Tests(TargetObjectBase):
         return False
       if not self._RunReferenceSolution(errors):
         return False
-    if not self.SetCacheStamp():
-      errors.Error(self, "Failed to create stamp file")
+    try:
+      self.SetCacheStamp()
+    except:
+      errors.Exception(self)
       return False
     return True
 
@@ -1087,7 +1106,7 @@ class Tests(TargetObjectBase):
         return False
       elif res.status != RunResult.OK:
         errors.Error(self,
-                     "%s: Validator Failed (%s)" % (self.validator.src_name, res.status))
+                     "%s: Validator Failed: %s" % (self.validator.src_name, res.status))
         return False
     Console.PrintAction("VALIDATE", self, "PASSED", overwrite=True)
     return True
@@ -1172,26 +1191,26 @@ class Tests(TargetObjectBase):
       return result
     Console.PrintAction("TEST", solution)
     if not solution.IsCorrect() and solution.challenge_cases:
-      (result, any_cached) = self._TestSolutionWithChallengeCases(solution, errors)
+      result = self._TestSolutionWithChallengeCases(solution, errors)
     else:
-      (result, any_cached) = self._TestSolutionWithAllCases(solution, errors)
-    status_line = ""
+      result = self._TestSolutionWithAllCases(solution, errors)
+    status_row = []
     if result.passed:
-      status_line += "PASSED"
+      status_row += [Console.CYAN, "PASSED", Console.NORMAL, " "]
       if result.IsAllAccepted():
-        status_line += " (%.2f/%.2f)" % (result.GetMaxTime(), result.GetTotalTime())
+        status_row += [" (%.2f/%.2f)" % (result.GetMaxTime(), result.GetTotalTime())]
       # TODO: show something when challenge succeeded.
     else:
+      status_row += [Console.RED, "FAILED", Console.NORMAL, " "]
       if result.ruling_file:
-        # TODO: use console codes.
-        status_line += ("\x1b[31m%s\x1b[0m: \x1b[1m%s\x1b[0m" %
-                        (result.cases[result.ruling_file].verdict,
-                         test_result.ruling_file))
+        status_row += [result.cases[result.ruling_file].verdict,
+                       ": ",
+                       result.ruling_file]
       else:
-        status_line += "Unexpectedly Accepted"
-    if any_cached:
-      status_line += " (cached)"
-    Console.PrintAction("TEST", solution, status_line, overwrite=True)
+        status_row += ["Unexpectedly Accepted"]
+    if result.cached:
+      status_row += [" (cached)"]
+    Console.PrintAction("TEST", solution, overwrite=True, *status_row)
     return result
 
   def _TestSolutionWithChallengeCases(self, solution, errors):
@@ -1214,16 +1233,15 @@ class Tests(TargetObjectBase):
       result.detail = "Challenge case not found"
       return (result, False)
     # Try challenge cases.
-    any_cached = False
     for (i, infile) in enumerate(challenge_cases):
       Console.PrintAction(
         "TEST", solution,
         "[%d/%d] %s" % (i+1, len(challenge_cases), infile),
         overwrite=True)
       (verdict, time, cached) = self._TestOneCase(
-        solution, infile, cookie)
+        solution, infile, cookie, errors)
       if cached:
-        any_cached = True
+        result.cached = True
       result.cases[infile].verdict = verdict
       if verdict == TestResult.AC:
         errors.Error(solution,
@@ -1241,7 +1259,7 @@ class Tests(TargetObjectBase):
         break
     if result.passed is None:
       result.passed = True
-    return (result, any_cached)
+    return result
 
   def _TestSolutionWithAllCases(self, solution, errors):
     """
@@ -1252,16 +1270,15 @@ class Tests(TargetObjectBase):
     cookie = solution.GetCacheStamp()
     result = TestResult(self.problem, solution, infiles)
     # Try all cases.
-    any_cached = False
     for (i, infile) in enumerate(infiles):
       Console.PrintAction(
         "TEST", solution,
         "[%d/%d] %s" % (i+1, len(infiles), infile),
         overwrite=True)
       (verdict, time, cached) = self._TestOneCase(
-        solution, infile, cookie)
+        solution, infile, cookie, errors)
       if cached:
-        any_cached = True
+        result.cached = True
       result.cases[infile].verdict = verdict
       if verdict not in (TestResult.AC, TestResult.WA, TestResult.TLE, TestResult.RE):
         errors.Error(solution,
@@ -1283,9 +1300,9 @@ class Tests(TargetObjectBase):
       result.passed = False
     if result.passed is None:
       result.passed = True
-    return (result, any_cached)
+    return result
 
-  def _TestOneCase(self, solution, infile, cookie):
+  def _TestOneCase(self, solution, infile, cookie, errors):
     """
     Test a solution with one case.
     Cache results if option is set.
@@ -1296,11 +1313,18 @@ class Tests(TargetObjectBase):
       os.path.splitext(infile)[0] + FileNames.CACHE_EXT)
     if self.options.cache_tests:
       if cookie is not None and os.path.isfile(cachefile):
-        (cached_cookie, result) = FileUtil.PickleLoad(cachefile)
+        try:
+          (cached_cookie, result) = FileUtil.PickleLoad(cachefile)
+        except:
+          errors.Exception(solution)
+          cached_cookie = None
         if cached_cookie == cookie:
           return tuple(list(result)+[True])
     result = self._TestOneCaseNoCache(solution, infile)
-    FileUtil.PickleSave((cookie, result), cachefile)
+    try:
+      FileUtil.PickleSave((cookie, result), cachefile)
+    except:
+      errors.Exception(solution)
     return tuple(list(result)+[False])
 
   def _TestOneCaseNoCache(self, solution, infile):
@@ -1340,7 +1364,10 @@ class Tests(TargetObjectBase):
     Remove test cases.
     """
     Console.PrintAction("CLEAN", self)
-    return FileUtil.RemoveTree(self.out_dir)
+    try:
+      FileUtil.RemoveTree(self.out_dir)
+    except:
+      errors.Exception(self)
 
   def ListInputFiles(self):
     """
@@ -1450,9 +1477,10 @@ class Solution(TargetObjectBase):
     if log:
       errors.Warning(self, "Compiler warnings found")
       Console.PrintLog(log)
-    if not self.SetCacheStamp():
-      errors.Error(self,
-                   "Failed to create stamp file")
+    try:
+      self.SetCacheStamp()
+    except:
+      errors.Exception(self)
       return False
     return True
 
@@ -1474,7 +1502,12 @@ class Solution(TargetObjectBase):
     Clean this solution.
     """
     Console.PrintAction("CLEAN", self)
-    return self.code.Clean()
+    try:
+      self.code.Clean()
+      return True
+    except:
+      errors.Exception(self)
+      return False
 
 
 
@@ -1532,6 +1565,7 @@ class Rime(object):
     else:
       Console.PrintError("Unknown command: %s" % cmd)
       return 1
+    Console.Print(Console.BOLD, "Error Summary:", Console.NORMAL)
     errors.PrintSummary()
     return 0
 
@@ -1559,51 +1593,48 @@ class Rime(object):
   def PrintTestSummary(self, results):
     if len(results) == 0:
       return
-    problem_name_width = max(
-      map(lambda t: len(t.problem.name), results))
+    Console.Print(Console.BOLD, "Test Summary:", Console.NORMAL)
     solution_name_width = max(
       map(lambda t: len(t.solution.name), results))
     last_problem = None
     # TODO: use console codes.
     for result in sorted(results, TestResult.CompareForListing):
-      line = ""
       if last_problem is not result.problem:
-        line += "\x1b[36m"
-        line += result.problem.name.ljust(problem_name_width)
-        line += "\x1b[0m"
-        line += " "
-        line += ("%d solutions, %d tests" %
+        row = [Console.BOLD,
+               Console.CYAN,
+               result.problem.name,
+               Console.NORMAL,
+               Console.BOLD,
+               " ... %d solutions, %d tests" %
                  (len(result.problem.solutions),
-                  len(result.problem.tests.ListInputFiles())))
-        Console.Print(line)
-        line = ""
+                  len(result.problem.tests.ListInputFiles()))]
+        Console.Print(*row)
         last_problem = result.problem
-      line += " " * problem_name_width
-      line += " "
-      if result.solution.IsCorrect():
-        line += "\x1b[32m"
-      else:
-        line += "\x1b[33m"
-      line += result.solution.name.ljust(solution_name_width)
-      line += "\x1b[0m "
+      row = ["  "]
+      row += [result.solution.IsCorrect() and Console.GREEN or Console.YELLOW,
+              result.solution.name.ljust(solution_name_width),
+              Console.NORMAL,
+              " "]
       if result.passed:
-        line += "PASSED"
+        row += [Console.CYAN, "PASSED", Console.NORMAL]
       else:
-        line += "FAILED"
-      line += " "
+        row += [Console.RED, "FAILED", Console.NORMAL]
       if result.passed:
         if result.IsAllAccepted():
-          line += "(%.2f/%.2f)" % (result.GetMaxTime(), result.GetTotalTime())
+          row += [" (%.2f/%.2f)" % (result.GetMaxTime(), result.GetTotalTime())]
       else:
         if result.detail:
-          line += "\x1b[31m%s\x1b[0m" % result.detail
+          row += [" ",
+                  result.detail]
         else:
           if result.ruling_file:
-            line += ("\x1b[31m%s\x1b[0m: \x1b[1m%s\x1b[0m" %
-                     result.cases[result.ruling_file].result)
+            row += [" ",
+                    result.cases[result.ruling_file].verdict,
+                    ": ",
+                    result.ruling_file]
           else:
-            line += "\x1b[31mUnexpectedly Accepted\x1b[0m"
-      Console.Print(line)
+            row += [" Unexpectedly Accepted"]
+      Console.Print(*row)
 
   def _ParseArgs(self, args):
     """
@@ -1637,7 +1668,7 @@ def main():
   except KeyboardInterrupt:
     # Suppress stack trace when interrupted by Ctrl-C
     sys.exit(1)
-  except:
+  except Exception:
     # Print stack trace for debug.
     exc = sys.exc_info()
     sys.excepthook(*exc)
