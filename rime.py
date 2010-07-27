@@ -451,7 +451,7 @@ class Code(object):
         input=input, output=output, timeout=timeout)
     except Exception, e:
       result = RunResult(str(e), None)
-      return (result, "")
+      return result
 
   def Clean(self):
     FileUtil.RemoveTree(self.out_dir)
