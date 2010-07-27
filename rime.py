@@ -328,8 +328,10 @@ class SingleCaseResult(object):
   """
 
   def __init__(self, verdict, time):
+    # Pre-defined of verdicts are listed in TestResult.
     self.verdict = verdict
     self.time = time
+
 
 
 class TestResult(object):
@@ -337,21 +339,14 @@ class TestResult(object):
   Represents the test result of a single solution.
   """
 
+  # Note: verdict can be set different from any of these;
+  # in that case, you should treat it as System Error.
   NA = "-"
   AC = "Accepted"
   WA = "Wrong Answer"
   TLE = "Time Limit Exceeded"
   RE = "Runtime Error"
   ERR = "System Error"
-
-  COLORS = {
-    NA: [],
-    AC: [Console.CYAN],
-    WA: [Console.RED],
-    TLE: [Console.RED],
-    RE: [Console.RED],
-    ERR: [Console.RED],
-    }
 
   def __init__(self, problem, solution, files):
     """
@@ -456,7 +451,7 @@ class Code(object):
         input=input, output=output, timeout=timeout)
     except Exception, e:
       result = RunResult(str(e), None)
-      return (result, "")
+      return result
 
   def Clean(self):
     FileUtil.RemoveTree(self.out_dir)
