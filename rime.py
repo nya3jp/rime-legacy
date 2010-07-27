@@ -46,7 +46,6 @@ Commands:
 
 Options:
   -h, --help         show this help message and exit
-  -I, --indicator    use indicator for progress display
   -C, --cache-tests  cache test results
 """
 
@@ -1592,7 +1591,6 @@ class Rime(object):
     solution_name_width = max(
       map(lambda t: len(t.solution.name), results))
     last_problem = None
-    # TODO: use console codes.
     for result in sorted(results, TestResult.CompareForListing):
       if last_problem is not result.problem:
         row = [Console.BOLD,
