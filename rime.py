@@ -296,7 +296,7 @@ class ErrorRecorder(object):
 
   def Exception(self, source, e=None, quiet=False):
     """
-    Emit an exception error.
+    Emit an exception without aborting.
     If e is not given, use current context.
     If quiet is True it is not printed immediately, but shown in summary.
     """
@@ -322,12 +322,11 @@ class ErrorRecorder(object):
 
 class SingleCaseResult(object):
   """
-  Represents the test result of a single solution versus
-  a single test case.
+  Test result of a single solution versus a single test case.
   """
 
   def __init__(self, verdict, time):
-    # Pre-defined of verdicts are listed in TestResult.
+    # Pre-defined list of verdicts are listed in TestResult.
     self.verdict = verdict
     self.time = time
 
@@ -335,7 +334,8 @@ class SingleCaseResult(object):
 
 class TestResult(object):
   """
-  Represents the test result of a single solution.
+  Test result of a single solution.
+  This includes sub-results for each test case.
   """
 
   # Note: verdict can be set different from any of these;
@@ -403,6 +403,7 @@ class TestResult(object):
 class RunResult(object):
   """
   Result of a single run.
+  Note that this is not judgement result but just execution status.
   """
 
   OK = "OK"
@@ -417,10 +418,18 @@ class RunResult(object):
 
 
 class Code(object):
+  """
+  Source code.
+  Supports operations such as compile, run, clean.
+  """
 
+  # Compile log filename.
   COMPILE_LOG_FILE = 'compile.log'
+  # Set to True if deriving class of source code does not
+  # require compilation (e.g. script language).
   QUIET_COMPILE = False
 
+  # Should be set in each instance.
   src_name = None
   src_dir = None
   out_dir = None
@@ -431,9 +440,15 @@ class Code(object):
     self.out_dir = out_dir
 
   def MakeOutDir(self):
+    """
+    Create output directory.
+    """
     FileUtil.MakeDir(self.out_dir)
 
   def Compile(self):
+    """
+    Compile the code and return (RunResult, log) pair.
+    """
     try:
       self.MakeOutDir()
       result = self._ExecForCompile(args=self.compile_args)
@@ -444,6 +459,9 @@ class Code(object):
       return (result, "")
 
   def Run(self, args, cwd, input, output, timeout):
+    """
+    Run the code and return RunResult.
+    """
     try:
       return self._ExecForRun(
         args=self.run_args+args, cwd=cwd,
@@ -453,7 +471,15 @@ class Code(object):
       return result
 
   def Clean(self):
-    FileUtil.RemoveTree(self.out_dir)
+    """
+    Clean the output directory.
+    Return an exception object on error.
+    """
+    try:
+      FileUtil.RemoveTree(self.out_dir)
+      return None
+    except Exception, e:
+      return e
 
   def _ExecForCompile(self, args):
     try:
@@ -1348,7 +1374,7 @@ class Tests(TargetObjectBase):
       input=os.devnull, output=os.path.join(solution.out_dir, judgefile),
       timeout=None)
     if res.status == RunResult.RE:
-      return (TestResult.ERR, None)
+      return ("Validator " + RunResult.RE, None)
     if res.status != RunResult.OK:
       return (TestResult.WA, None)
     return (TestResult.AC, time)
@@ -1496,12 +1522,11 @@ class Solution(TargetObjectBase):
     Clean this solution.
     """
     Console.PrintAction("CLEAN", self)
-    try:
-      self.code.Clean()
-      return True
-    except:
-      errors.Exception(self)
+    e = self.code.Clean()
+    if e:
+      errors.Exception(self, e)
       return False
+    return True
 
 
 
