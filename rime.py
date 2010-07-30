@@ -971,17 +971,12 @@ class Problem(TargetObjectBase):
     """
     Console.PrintAction("CLEAN", self)
     success = True
-    if not self.tests.Clean(errors):
-      success = False
-    for solution in self.solutions:
-      if not solution.Clean(errors):
-        success = False
     if success:
       try:
         FileUtil.RemoveTree(self.out_dir)
       except:
         errors.Exception(self)
-      success = False
+        success = False
     return success
 
 
