@@ -5,3 +5,13 @@
 ##
 
 
+# (1). Wiki 生成のための設定
+
+WIKI_URL = "http://example.com/pukiwiki/"
+WIKI_STATUS_PAGE = "ステータス"
+WIKI_ENCODING = "euc-jp"
+WIKI_AUTH_REALM = "Staff Only"
+WIKI_AUTH_HOSTNAME = "example.com"
+WIKI_AUTH_USERNAME = "hoge"
+WIKI_AUTH_PASSWORD = "hoge"
+

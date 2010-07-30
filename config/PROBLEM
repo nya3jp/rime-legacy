@@ -7,12 +7,6 @@
 
 ## (1). 問題の基本設定
 
-# この問題のタイトル
-TITLE = "問題タイトル"
-
-# この問題のWikiページ名
-WIKI_NAME = "Problem Title"
-
 # 1入力当たりのタイムリミット (秒)
 TIME_LIMIT = 3.0
 
@@ -23,4 +17,23 @@ TIME_LIMIT = 3.0
 ## 一番最初のものが使用されます。
 
 #REFERENCE_SOLUTION = 'name'
+
+
+## (3). 進捗状況ページ生成のための設定
+## 進捗状況 Wiki ページを生成するために必要な情報を以下で指定します。
+
+# タイトル
+TITLE = "問題タイトル"
+
+# Wiki ページ名
+WIKI_NAME = "Problem Title"
+
+# 担当者一覧
+ASSIGNEES = ["ほげ", "ぴよ"]
+
+# 入力確定フラグ
+INPUT_FIXED = False
+
+# 個別の出力検証器が必要かどうか
+NEED_CUSTOM_JUDGE = False
 
