@@ -1326,11 +1326,13 @@ class Tests(TargetObjectBase):
         break
       elif verdict != TestResult.AC:
         result.ruling_file = infile
+        result.passed = False
+        result.detail = "%s: %s" % (infile, verdict)
         if solution.IsCorrect():
           result.good = False
-          result.passed = False
-          result.detail = "%s: %s" % (infile, verdict)
           errors.Error(solution, result.detail, quiet=True)
+        else:
+          result.good = True
         break
       result.cases[infile].time = time
     if result.good is None:
