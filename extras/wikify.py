@@ -106,11 +106,8 @@ def GenerateWiki(root, errors):
     elif num_tests >= 20:
       cell_input = BGCOLOR_NOTBAD + str(num_tests)
     # Output:
-    if num_bads == 0:
-      if num_corrects >= 2:
-        cell_output = CELL_GOOD
-      else:
-        cell_output = CELL_NOTBAD
+    if num_bads == 0 and num_tests >= 10 and num_corrects >= 2:
+      cell_output = CELL_GOOD
     # Validator:
     if problem.tests.validator is not None:
       cell_validator = CELL_GOOD
