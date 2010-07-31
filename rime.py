@@ -1198,7 +1198,7 @@ class Tests(TargetObjectBase):
     Test all solutions.
     """
     if not self.Build(errors):
-      return False
+      return []
     results = []
     for solution in self.problem.solutions:
       results.extend(self.TestSolution(solution, errors))
