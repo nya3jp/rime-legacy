@@ -436,12 +436,32 @@ class Code(object):
   # require compilation (e.g. script language).
   QUIET_COMPILE = False
 
+  def __init__(self):
+    pass
+
+  def Compile(self):
+    raise NotImplementedError()
+
+  def Run(self, args, cwd, input, output, timeout):
+    raise NotImplementedError()
+
+  def Clean(self):
+    raise NotImplementedError()
+
+
+
+class FileBasedCode(Code):
+  """
+  Source code which is based on files.
+  """
+
   # Should be set in each instance.
   src_name = None
   src_dir = None
   out_dir = None
 
   def __init__(self, src_name, src_dir, out_dir):
+    super(FileBasedCode, self).__init__()
     self.src_name = src_name
     self.src_dir = src_dir
     self.out_dir = out_dir
@@ -552,7 +572,7 @@ class Code(object):
 
 
 
-class CCode(Code):
+class CCode(FileBasedCode):
 
   def __init__(self, src_name, src_dir, out_dir, flags):
     super(CCode, self).__init__(
@@ -565,7 +585,7 @@ class CCode(Code):
 
 
 
-class CXXCode(Code):
+class CXXCode(FileBasedCode):
 
   def __init__(self, src_name, src_dir, out_dir, flags):
     super(CXXCode, self).__init__(
@@ -578,7 +598,7 @@ class CXXCode(Code):
 
 
 
-class JavaCode(Code):
+class JavaCode(FileBasedCode):
 
   def __init__(self, src_name, src_dir, out_dir,
                encoding, mainclass, compile_flags, run_flags):
@@ -593,7 +613,7 @@ class JavaCode(Code):
 
 
 
-class ScriptCode(Code):
+class ScriptCode(FileBasedCode):
 
   QUIET_COMPILE = True
 
@@ -620,8 +640,7 @@ class DiffCode(Code):
   QUIET_COMPILE = True
 
   def __init__(self):
-    super(DiffCode, self).__init__(
-      src_name="diff", src_dir=None, out_dir=None)
+    super(DiffCode, self).__init__()
 
   def Compile(self):
     result = RunResult(RunResult.OK, 0.0)
@@ -634,9 +653,17 @@ class DiffCode(Code):
     parser.add_option('-o', '--outfile', dest='outfile')
     (options, pos_args) = parser.parse_args([''] + args)
     run_args = ['diff', '-u', options.difffile, options.outfile]
-    return self._ExecForRun(
-      args=run_args, cwd=cwd,
-      input=input, output=output, timeout=timeout)
+    devnull = open(os.devnull, 'w')
+    ret = subprocess.call(run_args, cwd=cwd,
+                          stdin=devnull, stdout=devnull, stderr=devnull)
+    if ret == 0:
+      return RunResult(RunResult.OK, 0.0)
+    if ret > 0:
+      return RunResult(RunResult.NG, None)
+    return RunResult(RunResult.RE, None)
+
+  def Clean(self):
+    return True
 
 
 
