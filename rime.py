@@ -1571,7 +1571,7 @@ class Rime(object):
       base_dir = os.path.abspath(params[0])
       params = params[1:]
     else:
-      base_dir = root.base_dir
+      base_dir = os.getcwd()
     obj = root.FindByBaseDir(base_dir)
     if not obj:
       Console.PrintError("Target directory is not managed by Rime.")
