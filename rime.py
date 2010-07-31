@@ -109,6 +109,7 @@ class FileUtil(object):
 
   @classmethod
   def ListDir(cls, dir, recurse=False):
+    files = []
     try:
       files = os.listdir(dir)
       if recurse:
@@ -1200,19 +1201,27 @@ class Tests(TargetObjectBase):
       return False
     results = []
     for solution in self.problem.solutions:
-      results.append(self.TestSolution(solution, errors))
+      results.extend(self.TestSolution(solution, errors))
     return results
 
   def TestSolution(self, solution, errors):
     """
     Test a single solution.
     """
+    # Note: though Tests.Test() executes Tests.Build(), it is also
+    # required here because Solution.Test() calls this function directly.
+    if not self.Build(errors):
+      result = TestResult(self.problem, solution, [])
+      result.good = False
+      result.passed = False
+      result.detail = "Failed to build tests"
+      return [result]
     if not solution.Build(errors):
       result = TestResult(self.problem, solution, [])
       result.good = False
       result.passed = False
       result.detail = "Compile Error"
-      return result
+      return [result]
     Console.PrintAction("TEST", solution)
     if not solution.IsCorrect() and solution.challenge_cases:
       result = self._TestSolutionWithChallengeCases(solution, errors)
@@ -1236,7 +1245,7 @@ class Tests(TargetObjectBase):
     if result.cached:
       status_row += [" ", "(cached)"]
     Console.PrintAction("TEST", solution, overwrite=True, *status_row)
-    return result
+    return [result]
 
   def _TestSolutionWithChallengeCases(self, solution, errors):
     """
