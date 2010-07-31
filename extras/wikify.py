@@ -58,14 +58,15 @@ def LoadRimeModule():
     if dir == pardir:
       raise Exception("rime.py not found!")
     dir = pardir
+  global rime
   rime = imp.load_source('rime', os.path.join(dir, 'rime.py'))
-  return rime
 
 
 def GenerateWiki(root, errors):
   # Clean and update.
   root.Clean(errors)
-  #subprocess.call(['svn', 'up'])
+  rime.Console.PrintAction("UPDATE", None, "svn up")
+  subprocess.call(['svn', 'up'])
   # Get system information.
   rev = commands.getoutput('svnversion')
   username = getpass.getuser()
@@ -132,6 +133,7 @@ def UploadWiki(root, wiki):
   auth_hostname = root.config['WIKI_AUTH_HOSTNAME']
   auth_username = root.config['WIKI_AUTH_USERNAME']
   auth_password = root.config['WIKI_AUTH_PASSWORD']
+  rime.Console.PrintAction("UPLOAD", None, wiki_url)
   auth_handler = urllib2.HTTPBasicAuthHandler()
   auth_handler.add_password(auth_realm, auth_hostname, auth_username, auth_password)
   opener = urllib2.build_opener(auth_handler)
@@ -150,14 +152,15 @@ def UploadWiki(root, wiki):
 
 def main():
   # Initialize Rime object.
-  rime_module = LoadRimeModule()
-  errors = rime_module.ErrorRecorder()
-  rime = rime_module.Rime()
-  options = rime.GetDefaultOptions()
-  root = rime.LoadRoot(os.getcwd(), options, errors)
+  LoadRimeModule()
+  errors = rime.ErrorRecorder()
+  arime = rime.Rime()
+  options = arime.GetDefaultOptions()
+  root = arime.LoadRoot(os.getcwd(), options, errors)
   if not root:
     errors.PrintSummary()
     return
+  os.chdir(root.base_dir)
   wiki = GenerateWiki(root, errors)
   UploadWiki(root, wiki)
 

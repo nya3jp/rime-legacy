@@ -230,11 +230,14 @@ class Console(object):
     """
     Utility function to print actions.
     """
-    args = list(args)
+    real_args = [cls.GREEN, "[" + action.center(10) + "]", cls.NORMAL]
+    if obj:
+      real_args += [" ", obj.fullname]
     if args:
-      args = [": "] + args
-    args = [cls.GREEN, "[" + action.center(10) + "]", cls.NORMAL, " ", obj.fullname] + args
-    cls.Print(*args, **kwargs)
+      if obj:
+        real_args += [":"]
+      real_args += [" "] + list(args)
+    cls.Print(*real_args, **kwargs)
 
   @classmethod
   def PrintError(cls, msg):
