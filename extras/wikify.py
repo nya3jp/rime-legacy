@@ -91,13 +91,13 @@ def GenerateWiki(root, errors):
     num_tests = len(problem.tests.ListInputFiles())
     correct_solution_results = [result for result in results if result.solution.IsCorrect()]
     num_corrects = len(correct_solution_results)
-    num_passed = len([result for result in correct_solution_results if result.passed])
+    num_bads = len([result for result in results if not result.good])
     input_fixed = problem.config.get('INPUT_FIXED')
     need_custom_judge = problem.config.get('NEED_CUSTOM_JUDGE')
     # Solutions:
-    if num_passed >= 2:
+    if num_corrects >= 2:
       cell_solutions = CELL_GOOD
-    elif num_passed >= 1:
+    elif num_corrects >= 1:
       cell_solutions = CELL_NOTBAD
     # Input:
     if input_fixed:
@@ -105,8 +105,8 @@ def GenerateWiki(root, errors):
     elif num_tests >= 20:
       cell_input = BGCOLOR_NOTBAD + str(num_tests)
     # Output:
-    if num_passed == num_corrects:
-      if num_passed >= 2:
+    if num_bads == 0:
+      if num_corrects >= 2:
         cell_output = CELL_GOOD
       else:
         cell_output = CELL_NOTBAD

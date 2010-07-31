@@ -359,16 +359,17 @@ class TestResult(object):
     self.cases = dict(
       [(file, SingleCaseResult(TestResult.NA, None))
        for file in files])
+    self.good = None
     self.passed = None
     self.detail = None
     self.ruling_file = None
     self.cached = False
 
-  def IsAllAccepted(self):
+  def IsTimeStatsAvailable(self):
     """
-    Checks if accpeted in all cases.
+    Checks if time statistics are available.
     """
-    return all([c.verdict == TestResult.AC for c in self.cases.values()])
+    return (self.files and all([c.verdict == TestResult.AC for c in self.cases.values()]))
 
   def GetMaxTime(self):
     """
@@ -1106,6 +1107,8 @@ class Tests(TargetObjectBase):
     """
     Run input validator.
     """
+    if self.validator is None:
+      return True
     Console.PrintAction("VALIDATE", self)
     infiles = self.ListInputFiles()
     for (i, infile) in enumerate(infiles):
@@ -1203,6 +1206,7 @@ class Tests(TargetObjectBase):
     """
     if not solution.Build(errors):
       result = TestResult(self.problem, solution, [])
+      result.good = False
       result.passed = False
       result.detail = "Compile Error"
       return result
@@ -1211,22 +1215,23 @@ class Tests(TargetObjectBase):
       result = self._TestSolutionWithChallengeCases(solution, errors)
     else:
       result = self._TestSolutionWithAllCases(solution, errors)
-    status_row = []
-    if result.passed:
-      status_row += [Console.CYAN, "PASSED", Console.NORMAL, " "]
-      if result.IsAllAccepted():
-        status_row += [" (%.2f/%.2f)" % (result.GetMaxTime(), result.GetTotalTime())]
-      # TODO: show something when challenge succeeded.
-    else:
-      status_row += [Console.RED, "FAILED", Console.NORMAL, " "]
-      if result.ruling_file:
-        status_row += [result.cases[result.ruling_file].verdict,
-                       ": ",
-                       result.ruling_file]
+    if result.good and result.passed:
+      assert not result.detail
+      if result.IsTimeStatsAvailable():
+        result.detail = "(%.2f/%.2f)" % (result.GetMaxTime(), result.GetTotalTime())
       else:
-        status_row += ["Unexpectedly Accepted"]
+        result.detail = "(no test)"
+    else:
+      assert result.detail
+    status_row = []
+    status_row += [
+      result.good and Console.CYAN or Console.RED,
+      result.passed and "PASSED" or "FAILED",
+      Console.NORMAL,
+      " ",
+      result.detail]
     if result.cached:
-      status_row += [" (cached)"]
+      status_row += [" ", "(cached)"]
     Console.PrintAction("TEST", solution, overwrite=True, *status_row)
     return result
 
@@ -1246,6 +1251,7 @@ class Tests(TargetObjectBase):
                      "Challenge case not found: %s" % infile)
         all_exists = False
     if not all_exists:
+      result.good = False
       result.passed = False
       result.detail = "Challenge case not found"
       return (result, False)
@@ -1261,21 +1267,23 @@ class Tests(TargetObjectBase):
         result.cached = True
       result.cases[infile].verdict = verdict
       if verdict == TestResult.AC:
-        errors.Error(solution,
-                     "Unexpectedly Accepted: %s" % infile,
-                     quiet=True)
         result.ruling_file = infile
-        result.passed = False
+        result.good = False
+        result.passed = True
+        result.detail = "%s: Unexpectedly Accepted" % infile
+        errors.Error(solution, result.detail, quiet=True)
         break
       elif verdict not in (TestResult.WA, TestResult.TLE, TestResult.RE):
-        errors.Error(solution,
-                     "Validation Error: %s" % infile,
-                     quiet=True)
         result.ruling_file = infile
+        result.good = False
         result.passed = False
+        result.detail = "%s: Judge Error" % infile
+        errors.Error(solution, result.detail, quiet=True)
         break
-    if result.passed is None:
-      result.passed = True
+    if result.good is None:
+      result.good = True
+      result.passed = False
+      result.detail = "Expectedly Failed"
     return result
 
   def _TestSolutionWithAllCases(self, solution, errors):
@@ -1298,25 +1306,26 @@ class Tests(TargetObjectBase):
         result.cached = True
       result.cases[infile].verdict = verdict
       if verdict not in (TestResult.AC, TestResult.WA, TestResult.TLE, TestResult.RE):
-        errors.Error(solution,
-                     "Validation Error: %s" % infile,
-                     quiet=True)
         result.ruling_file = infile
+        result.good = False
         result.passed = False
+        result.detail = "%s: Judge Error" % infile
+        errors.Error(solution, result.detail, quiet=True)
         break
       elif verdict != TestResult.AC:
         result.ruling_file = infile
         if solution.IsCorrect():
-          errors.Error(solution,
-                       "%s: %s" % (verdict, infile),
-                       quiet=True)
+          result.good = False
           result.passed = False
+          result.detail = "%s: %s" % (infile, verdict)
+          errors.Error(solution, result.detail, quiet=True)
         break
       result.cases[infile].time = time
-    if not solution.IsCorrect() and result.IsAllAccepted():
-      result.passed = False
-    if result.passed is None:
+    if result.good is None:
+      result.good = solution.IsCorrect()
       result.passed = True
+      if not result.good:
+        result.detail = "Unexpectedly Passed"
     return result
 
   def _TestOneCase(self, solution, infile, cookie, errors):
@@ -1581,6 +1590,7 @@ class Rime(object):
     else:
       Console.PrintError("Unknown command: %s" % cmd)
       return 1
+    Console.Print()
     Console.Print(Console.BOLD, "Error Summary:", Console.NORMAL)
     errors.PrintSummary()
     return 0
@@ -1615,41 +1625,47 @@ class Rime(object):
     last_problem = None
     for result in sorted(results, TestResult.CompareForListing):
       if last_problem is not result.problem:
-        row = [Console.BOLD,
-               Console.CYAN,
-               result.problem.name,
-               Console.NORMAL,
-               Console.BOLD,
-               " ... %d solutions, %d tests" %
-                 (len(result.problem.solutions),
-                  len(result.problem.tests.ListInputFiles()))]
-        Console.Print(*row)
+        problem_row = [Console.BOLD,
+                       Console.CYAN,
+                       result.problem.name,
+                       Console.NORMAL,
+                       " ... %d solutions, %d tests" %
+                       (len(result.problem.solutions),
+                        len(result.problem.tests.ListInputFiles()))]
+        Console.Print(*problem_row)
         last_problem = result.problem
-      row = ["  "]
-      row += [result.solution.IsCorrect() and Console.GREEN or Console.YELLOW,
-              result.solution.name.ljust(solution_name_width),
-              Console.NORMAL,
-              " "]
-      if result.passed:
-        row += [Console.CYAN, "PASSED", Console.NORMAL]
+      status_row = ["  "]
+      status_row += [
+        result.solution.IsCorrect() and Console.GREEN or Console.YELLOW,
+        result.solution.name.ljust(solution_name_width),
+        Console.NORMAL,
+        " "]
+      status_row += [
+        result.good and Console.CYAN or Console.RED,
+        result.passed and "PASSED" or "FAILED",
+        Console.NORMAL,
+        " "]
+      if result.good:
+        if result.passed:
+          if result.IsTimeStatsAvailable():
+            status_row += ["(%.2f/%.2f)" % (result.GetMaxTime(), result.GetTotalTime())]
+          else:
+            status_row += ["(no test)"]
+        else:
+          status_row += ["Expectedly Failed"]
       else:
-        row += [Console.RED, "FAILED", Console.NORMAL]
-      if result.passed:
-        if result.IsAllAccepted():
-          row += [" (%.2f/%.2f)" % (result.GetMaxTime(), result.GetTotalTime())]
-      else:
-        if result.detail:
-          row += [" ",
-                  result.detail]
+        if result.passed:
+          status_row += ["Unexpectedly Passed"]
         else:
           if result.ruling_file:
-            row += [" ",
-                    result.cases[result.ruling_file].verdict,
-                    ": ",
-                    result.ruling_file]
+            status_row += [result.cases[result.ruling_file].verdict,
+                           ": ",
+                           result.ruling_file]
           else:
-            row += [" Unexpectedly Accepted"]
-      Console.Print(*row)
+            status_row += [result.detail]
+      if result.cached:
+        status_row += [" ", "(cached)"]
+      Console.Print(*status_row)
 
   def GetOptionParser(self):
     """
