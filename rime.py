@@ -586,7 +586,7 @@ class JavaCode(Code):
       src_name=src_name, src_dir=src_dir, out_dir=out_dir)
     self.encoding = encoding
     self.mainclass = mainclass
-    self.compile_args = (['javac', '-d', out_dir] +
+    self.compile_args = (['javac', '-encoding', self.encoding, '-d', out_dir] +
                          compile_flags + [src_name])
     self.run_args = (['java', '-Dline.separator=\n', '-cp', self.out_dir] +
                      run_flags + [mainclass])
