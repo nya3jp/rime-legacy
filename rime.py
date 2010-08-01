@@ -35,6 +35,7 @@ import threading
 import signal
 import shutil
 import pickle
+import commands
 
 
 HELP_MESSAGE = """\
@@ -150,6 +151,19 @@ class FileUtil(object):
         except:
           pass
       raise
+
+  @classmethod
+  def ConvPath(cls, path):
+    if not os.uname()[0].lower().startswith('cygwin'):
+      return path
+    try:
+      p = subprocess.Popen(['cygpath', '-wp', path], stdout=subprocess.PIPE)
+      newpath = p.communicate()[0].rstrip('\r\n')
+      if p.returncode == 0:
+        return newpath
+    except:
+      pass
+    return path
 
 
 
@@ -581,7 +595,7 @@ class CCode(FileBasedCode):
     self.compile_args = ['gcc',
                          '-o', os.path.join(out_dir, self.exe_name),
                          src_name] + flags
-    self.run_args = [os.path.join(self.out_dir, self.exe_name)]
+    self.run_args = [os.path.join(out_dir, self.exe_name)]
 
 
 
@@ -594,7 +608,7 @@ class CXXCode(FileBasedCode):
     self.compile_args = ['g++',
                          '-o', os.path.join(out_dir, self.exe_name),
                          src_name] + flags
-    self.run_args = [os.path.join(self.out_dir, self.exe_name)]
+    self.run_args = [os.path.join(out_dir, self.exe_name)]
 
 
 
@@ -606,9 +620,11 @@ class JavaCode(FileBasedCode):
       src_name=src_name, src_dir=src_dir, out_dir=out_dir)
     self.encoding = encoding
     self.mainclass = mainclass
-    self.compile_args = (['javac', '-d', out_dir] +
+    self.compile_args = (['javac', '-encoding', encoding,
+                          '-d', FileUtil.ConvPath(out_dir)] +
                          compile_flags + [src_name])
-    self.run_args = (['java', '-Dline.separator=\n', '-cp', self.out_dir] +
+    self.run_args = (['java', '-Dline.separator=\n',
+                      '-cp', FileUtil.ConvPath(out_dir)] +
                      run_flags + [mainclass])
 
 
@@ -621,7 +637,7 @@ class ScriptCode(FileBasedCode):
     super(ScriptCode, self).__init__(
       src_name=src_name, src_dir=src_dir, out_dir=out_dir)
     self.interpreter = interpreter
-    self.run_args = [interpreter, os.path.join(self.out_dir, self.src_name)]
+    self.run_args = [interpreter, os.path.join(out_dir, src_name)]
 
   def Compile(self):
     try:
