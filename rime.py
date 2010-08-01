@@ -35,6 +35,7 @@ import threading
 import signal
 import shutil
 import pickle
+import commands
 
 
 HELP_MESSAGE = """\
@@ -150,6 +151,16 @@ class FileUtil(object):
         except:
           pass
       raise
+
+  @classmethod
+  def ConvPath(cls, path):
+    if os.uname()[0][:6].lower() == 'cygwin':
+      p = commands.getstatusoutput('cygpath -wp ' + path)
+      if p[0] == 0:
+        return p[1]
+      else:
+        return path
+    return path
 
 
 
@@ -586,9 +597,11 @@ class JavaCode(Code):
       src_name=src_name, src_dir=src_dir, out_dir=out_dir)
     self.encoding = encoding
     self.mainclass = mainclass
-    self.compile_args = (['javac', '-encoding', encoding, '-d', out_dir] +
+    self.compile_args = (['javac', '-encoding', encoding,
+                          '-d', FileUtil.ConvPath(out_dir)] +
                          compile_flags + [src_name])
-    self.run_args = (['java', '-Dline.separator=\n', '-cp', out_dir] +
+    self.run_args = (['java', '-Dline.separator=\n',
+                      '-cp', FileUtil.ConvPath(out_dir)] +
                      run_flags + [mainclass])
 
 
