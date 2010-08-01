@@ -154,12 +154,15 @@ class FileUtil(object):
 
   @classmethod
   def ConvPath(cls, path):
-    if os.uname()[0][:6].lower() == 'cygwin':
-      p = commands.getstatusoutput('cygpath -wp ' + path)
-      if p[0] == 0:
-        return p[1]
-      else:
-        return path
+    if not os.uname()[0].lower().startswith('cygwin'):
+      return path
+    try:
+      p = subprocess.Popen(['cygpath', '-wp', path], stdout=subprocess.PIPE)
+      newpath = p.communicate()[0].rstrip('\r\n')
+      if p.returncode == 0:
+        return newpath
+    except:
+      pass
     return path
 
 
