@@ -561,7 +561,7 @@ class CCode(Code):
     self.compile_args = ['gcc',
                          '-o', os.path.join(out_dir, self.exe_name),
                          src_name] + flags
-    self.run_args = [os.path.join(self.out_dir, self.exe_name)]
+    self.run_args = [os.path.join(out_dir, self.exe_name)]
 
 
 
@@ -574,7 +574,7 @@ class CXXCode(Code):
     self.compile_args = ['g++',
                          '-o', os.path.join(out_dir, self.exe_name),
                          src_name] + flags
-    self.run_args = [os.path.join(self.out_dir, self.exe_name)]
+    self.run_args = [os.path.join(out_dir, self.exe_name)]
 
 
 
@@ -586,9 +586,9 @@ class JavaCode(Code):
       src_name=src_name, src_dir=src_dir, out_dir=out_dir)
     self.encoding = encoding
     self.mainclass = mainclass
-    self.compile_args = (['javac', '-encoding', self.encoding, '-d', out_dir] +
+    self.compile_args = (['javac', '-encoding', encoding, '-d', out_dir] +
                          compile_flags + [src_name])
-    self.run_args = (['java', '-Dline.separator=\n', '-cp', self.out_dir] +
+    self.run_args = (['java', '-Dline.separator=\n', '-cp', out_dir] +
                      run_flags + [mainclass])
 
 
@@ -601,7 +601,7 @@ class ScriptCode(Code):
     super(ScriptCode, self).__init__(
       src_name=src_name, src_dir=src_dir, out_dir=out_dir)
     self.interpreter = interpreter
-    self.run_args = [interpreter, os.path.join(self.out_dir, self.src_name)]
+    self.run_args = [interpreter, os.path.join(out_dir, src_name)]
 
   def Compile(self):
     try:
