@@ -74,6 +74,7 @@ class FileNames(object):
   EXE_EXT = '.exe'
   JUDGE_EXT = '.judge'
   CACHE_EXT = '.cache'
+  LOG_EXT = '.log'
 
 
 
@@ -165,6 +166,18 @@ class FileUtil(object):
       pass
     return path
 
+  @classmethod
+  def LocateBinary(cls, name):
+    if 'PATH' in os.environ:
+      path = os.environ['PATH']
+    else:
+      path = os.defpath
+    for dir in path.split(os.pathsep):
+      bin = os.path.join(dir, name)
+      if os.path.isfile(bin) and os.access(bin, os.X_OK):
+        return bin
+    return None
+      
 
 
 class Console(object):
@@ -431,6 +444,7 @@ class RunResult(object):
   NG = "Exitted Abnormally"
   RE = "Runtime Error"
   TLE = "Time Limit Exceeded"
+  PM = "Prerequisite Missing"
 
   def __init__(self, status, time):
     self.status = status
@@ -444,8 +458,6 @@ class Code(object):
   Supports operations such as compile, run, clean.
   """
 
-  # Compile log filename.
-  COMPILE_LOG_FILE = 'compile.log'
   # Set to True if deriving class of source code does not
   # require compilation (e.g. script language).
   QUIET_COMPILE = False
@@ -471,14 +483,18 @@ class FileBasedCode(Code):
 
   # Should be set in each instance.
   src_name = None
+  log_name = None
   src_dir = None
   out_dir = None
+  prereqs = None
 
-  def __init__(self, src_name, src_dir, out_dir):
+  def __init__(self, src_name, src_dir, out_dir, prereqs):
     super(FileBasedCode, self).__init__()
     self.src_name = src_name
     self.src_dir = src_dir
     self.out_dir = out_dir
+    self.prereqs = prereqs
+    self.log_name = os.path.splitext(src_name)[0] + FileNames.LOG_EXT
 
   def MakeOutDir(self):
     """
@@ -491,13 +507,13 @@ class FileBasedCode(Code):
     Compile the code and return (RunResult, log) pair.
     """
     try:
+      for name in self.prereqs:
+        if not FileUtil.LocateBinary(name):
+          return RunResult("%s: %s" % (RunResult.PM, name), None)
       self.MakeOutDir()
-      result = self._ExecForCompile(args=self.compile_args)
-      log = self._ReadCompileLog()
-      return (result, log)
+      return self._ExecForCompile(args=self.compile_args)
     except Exception, e:
-      result = RunResult(str(e), None)
-      return (result, "")
+      return RunResult(str(e), None)
 
   def Run(self, args, cwd, input, output, timeout):
     """
@@ -508,8 +524,7 @@ class FileBasedCode(Code):
         args=self.run_args+args, cwd=cwd,
         input=input, output=output, timeout=timeout)
     except Exception, e:
-      result = RunResult(str(e), None)
-      return result
+      return RunResult(str(e), None)
 
   def Clean(self):
     """
@@ -525,21 +540,23 @@ class FileBasedCode(Code):
   def _ExecForCompile(self, args):
     try:
       devnull = open(os.devnull, 'w')
-      outfile = open(os.path.join(self.out_dir, self.COMPILE_LOG_FILE), 'w')
+      outfile = open(os.path.join(self.out_dir, self.log_name), 'w')
       return self._ExecInternal(
         args=args, cwd=self.src_dir,
         stdin=devnull, stdout=outfile, stderr=subprocess.STDOUT)
     finally:
       try:
         devnull.close()
-        logfile.close()
+        outfile.close()
       except:
         pass
 
-  def _ReadCompileLog(self):
+  def ReadCompileLog(self):
     try:
-      logfile = open(os.path.join(self.out_dir, self.COMPILE_LOG_FILE), 'r')
+      logfile = open(os.path.join(self.out_dir, self.log_name), 'r')
       return logfile.read()
+    except:
+      return None
     finally:
       try:
         logfile.close()
@@ -590,7 +607,8 @@ class CCode(FileBasedCode):
 
   def __init__(self, src_name, src_dir, out_dir, flags):
     super(CCode, self).__init__(
-      src_name=src_name, src_dir=src_dir, out_dir=out_dir)
+      src_name=src_name, src_dir=src_dir, out_dir=out_dir,
+      prereqs=['gcc'])
     self.exe_name = os.path.splitext(src_name)[0] + FileNames.EXE_EXT
     self.compile_args = ['gcc',
                          '-o', os.path.join(out_dir, self.exe_name),
@@ -603,7 +621,8 @@ class CXXCode(FileBasedCode):
 
   def __init__(self, src_name, src_dir, out_dir, flags):
     super(CXXCode, self).__init__(
-      src_name=src_name, src_dir=src_dir, out_dir=out_dir)
+      src_name=src_name, src_dir=src_dir, out_dir=out_dir,
+      prereqs=['g++'])
     self.exe_name = os.path.splitext(src_name)[0] + FileNames.EXE_EXT
     self.compile_args = ['g++',
                          '-o', os.path.join(out_dir, self.exe_name),
@@ -617,7 +636,8 @@ class JavaCode(FileBasedCode):
   def __init__(self, src_name, src_dir, out_dir,
                encoding, mainclass, compile_flags, run_flags):
     super(JavaCode, self).__init__(
-      src_name=src_name, src_dir=src_dir, out_dir=out_dir)
+      src_name=src_name, src_dir=src_dir, out_dir=out_dir,
+      prereqs=['javac', 'java'])
     self.encoding = encoding
     self.mainclass = mainclass
     self.compile_args = (['javac', '-encoding', encoding,
@@ -635,7 +655,8 @@ class ScriptCode(FileBasedCode):
 
   def __init__(self, src_name, src_dir, out_dir, interpreter):
     super(ScriptCode, self).__init__(
-      src_name=src_name, src_dir=src_dir, out_dir=out_dir)
+      src_name=src_name, src_dir=src_dir, out_dir=out_dir,
+      prereqs=[interpreter])
     self.interpreter = interpreter
     self.run_args = [interpreter, os.path.join(out_dir, src_name)]
 
@@ -644,10 +665,18 @@ class ScriptCode(FileBasedCode):
       self.MakeOutDir()
       FileUtil.CopyFile(os.path.join(self.src_dir, self.src_name),
                         os.path.join(self.out_dir, self.src_name))
-      result = RunResult(RunResult.OK, 0.0)
+      return RunResult(RunResult.OK, 0.0)
     except Exception, e:
-      result = RunResult(str(e), None)
-    return (result, "")
+      try:
+        f = open(os.path.join(self.out_dir, self.log_name), 'w')
+        print >>f, str(e)
+        f.close()
+      except:
+        try:
+          f.close();
+        except:
+          pass
+      return RunResult(RunResult.RE, None)
 
 
 
@@ -657,10 +686,12 @@ class DiffCode(Code):
 
   def __init__(self):
     super(DiffCode, self).__init__()
+    self.log_name = 'diff.log'
 
   def Compile(self):
-    result = RunResult(RunResult.OK, 0.0)
-    return (result, "")
+    if not FileUtil.LocateBinary('diff'):
+      return RunResult("%s: diff" % RunResult.PM, None)
+    return RunResult(RunResult.OK, 0.0)
 
   def Run(self, args, cwd, input, output, timeout):
     parser = optparse.OptionParser()
@@ -669,9 +700,22 @@ class DiffCode(Code):
     parser.add_option('-o', '--outfile', dest='outfile')
     (options, pos_args) = parser.parse_args([''] + args)
     run_args = ['diff', '-u', options.difffile, options.outfile]
-    devnull = open(os.devnull, 'w')
-    ret = subprocess.call(run_args, cwd=cwd,
-                          stdin=devnull, stdout=devnull, stderr=devnull)
+    try:
+      devnull = open(os.devnull, 'w')
+      infile = open(input, 'r')
+      outfile = open(output, 'w')
+      try:
+        ret = subprocess.call(run_args, cwd=cwd,
+                              stdin=infile, stdout=outfile, stderr=devnull)
+      except OSError, e:
+        return RunResult(RunResult.RE, None)
+    finally:
+      try:
+        devnull.close()
+        infile.close()
+        outfile.close()
+      except:
+        pass
     if ret == 0:
       return RunResult(RunResult.OK, 0.0)
     if ret > 0:
@@ -1111,11 +1155,11 @@ class Tests(TargetObjectBase):
     for generator in self.generators:
       if not generator.QUIET_COMPILE:
         Console.PrintAction("COMPILE", self, generator.src_name)
-      (res, log) = generator.Compile()
+      res = generator.Compile()
       if res.status != RunResult.OK:
         errors.Error(self,
-                     "%s: Compile Error" % generator.src_name)
-        Console.PrintLog(log)
+                     "%s: Compile Error (%s)" % (generator.src_name, res.status))
+        Console.PrintLog(generator.ReadCompileLog())
         return False
     return True
 
@@ -1142,11 +1186,11 @@ class Tests(TargetObjectBase):
       return True
     if not self.validator.QUIET_COMPILE:
       Console.PrintAction("COMPILE", self, self.validator.src_name)
-    (res, log) = self.validator.Compile()
+    res = self.validator.Compile()
     if res.status != RunResult.OK:
       errors.Error(self,
-                   "%s: Compile Error" % self.validator.src_name)
-      Console.PrintLog(log)
+                   "%s: Compile Error (%s)" % (self.validator.src_name, res.status))
+      Console.PrintLog(self.validator.ReadCompileLog())
       return False
     return True
 
@@ -1188,10 +1232,10 @@ class Tests(TargetObjectBase):
       Console.PrintAction("COMPILE",
                           self,
                           self.judge.src_name)
-    (res, log) = self.judge.Compile()
+    res = self.judge.Compile()
     if res.status != RunResult.OK:
-      errors.Error(self, "%s: Compile Error" % self.judge.src_name)
-      Console.PrintLog(log)
+      errors.Error(self, "%s: Compile Error (%s)" % (self.judge.src_name, res.status))
+      Console.PrintLog(self.judge.ReadCompileLog())
       return False
     return True
 
@@ -1436,11 +1480,11 @@ class Tests(TargetObjectBase):
       cwd=self.out_dir,
       input=os.devnull, output=os.path.join(solution.out_dir, judgefile),
       timeout=None)
-    if res.status == RunResult.RE:
-      return ("Validator " + RunResult.RE, None)
-    if res.status != RunResult.OK:
+    if res.status == RunResult.OK:
+      return (TestResult.AC, time)
+    if res.status == RunResult.NG:
       return (TestResult.WA, None)
-    return (TestResult.AC, time)
+    return ("Validator " + res.status, None)
 
   def Clean(self, errors):
     """
@@ -1552,9 +1596,10 @@ class Solution(TargetObjectBase):
       return True
     if not self.code.QUIET_COMPILE:
       Console.PrintAction("COMPILE", self)
-    (res, log) = self.code.Compile()
+    res = self.code.Compile()
+    log = self.code.ReadCompileLog()
     if res.status != RunResult.OK:
-      errors.Error(self, "Compile Error")
+      errors.Error(self, "Compile Error (%s)" % res.status)
       Console.PrintLog(log)
       return False
     if log:
