@@ -67,6 +67,8 @@ class FileNames(object):
 
   RIME_OUT_DIR = 'rime-out'
   TESTS_DIR = 'tests'
+  TESTS_PACKED_DIR = 'tests.packed'
+  TESTS_PACKED_TARBALL = 'tests.tar.gz'
 
   IN_EXT = '.in'
   DIFF_EXT = '.diff'
@@ -335,7 +337,7 @@ class ErrorRecorder(object):
     """
     if e is None:
       e = sys.exc_info()[1]
-    self.Error(self, source, str(e), quiet)
+    self.Error(source, str(e), quiet)
 
   def HasError(self):
     return bool(self.errors)
@@ -441,7 +443,7 @@ class RunResult(object):
   """
 
   OK = "OK"
-  NG = "Exitted Abnormally"
+  NG = "Exited Abnormally"
   RE = "Runtime Error"
   TLE = "Time Limit Exceeded"
   PM = "Prerequisite Missing"
@@ -960,6 +962,16 @@ class RimeRoot(TargetObjectBase):
       results.extend(problem.Test(errors))
     return results
 
+  def Pack(self, errors):
+    """
+    Pack all.
+    """
+    success = True
+    for problem in self.problems:
+      if not problem.Pack(errors):
+        success = False
+    return success
+
   def Clean(self, errors):
     """
     Clean all.
@@ -1057,6 +1069,12 @@ class Problem(TargetObjectBase):
     """
     return self.tests.Test(errors)
 
+  def Pack(self, errors):
+    """
+    Pack tests.
+    """
+    return self.tests.Pack(errors)
+
   def Clean(self, errors):
     """
     Clean all solutions and tests.
@@ -1085,6 +1103,7 @@ class Tests(TargetObjectBase):
     self.root = self.parent.root
     self.src_dir = self.base_dir
     self.out_dir = os.path.join(self.problem.out_dir, FileNames.TESTS_DIR)
+    self.pack_dir = os.path.join(self.problem.out_dir, FileNames.TESTS_PACKED_DIR)
     self.stamp_file = os.path.join(self.out_dir, FileNames.STAMP_FILE)
     self.generators = []
     self.validator = None
@@ -1114,7 +1133,7 @@ class Tests(TargetObjectBase):
     except:
       errors.Exception(self)
       return False
-    if not os.path.isdir(self.src_dir):
+    if not os.path.isdir(self.out_dir):
       try:
         FileUtil.MakeDir(self.out_dir)
       except:
@@ -1486,6 +1505,81 @@ class Tests(TargetObjectBase):
       return (TestResult.WA, None)
     return ("Validator " + res.status, None)
 
+  def Pack(self, errors):
+    """
+    Pack test cases.
+    """
+    if self.IsBuildCached():
+      # TODO: do caching of packed tests output here.
+      pass
+    else:
+      if not self.Build(errors):
+        return False
+    infiles = self.ListInputFiles()
+    Console.PrintAction("PACK", self)
+    if not os.path.isdir(self.pack_dir):
+      try:
+        FileUtil.MakeDir(self.pack_dir)
+      except:
+        errors.Exception(self)
+        return False
+    for (i, infile) in enumerate(infiles):
+      basename = os.path.splitext(infile)[0]
+      difffile = basename + FileNames.DIFF_EXT
+      packed_infile = str(i+1) + FileNames.IN_EXT
+      packed_difffile = str(i+1) + FileNames.DIFF_EXT
+      try:
+        Console.PrintAction(
+          "PACK",
+          self,
+          "%s -> %s" % (infile, packed_infile),
+          overwrite=True)
+        FileUtil.CopyFile(os.path.join(self.out_dir, infile),
+                          os.path.join(self.pack_dir, packed_infile))
+        Console.PrintAction(
+          "PACK",
+          self,
+          "%s -> %s" % (difffile, packed_difffile),
+          overwrite=True)
+        FileUtil.CopyFile(os.path.join(self.out_dir, difffile),
+                          os.path.join(self.pack_dir, packed_difffile))
+      except:
+        errors.Exception(self)
+        return False
+    tar_args = ["tar", "czf",
+                os.path.join(os.pardir, FileNames.TESTS_PACKED_TARBALL),
+                os.curdir]
+    Console.PrintAction(
+      "PACK",
+      self,
+      " ".join(tar_args),
+      overwrite=True)
+    ret = -1
+    try:
+      devnull = open(os.devnull, 'w')
+      ret = subprocess.call(tar_args,
+                            cwd=self.pack_dir,
+                            stdin=devnull,
+                            stdout=devnull,
+                            stderr=devnull)
+    except:
+      errors.Exception(self)
+      return False
+    finally:
+      try:
+        devnull.close()
+      except:
+        pass
+    if ret != 0:
+      errors.Error(self, "tar failed: ret = %d" % ret)
+      return False
+    Console.PrintAction(
+      "PACK",
+      self,
+      FileNames.TESTS_PACKED_TARBALL,
+      overwrite=True)
+    return True
+
   def Clean(self, errors):
     """
     Remove test cases.
@@ -1625,6 +1719,13 @@ class Solution(TargetObjectBase):
     return self.code.Run(args=args, cwd=cwd,
                          input=input, output=output, timeout=timeout)
 
+  def Pack(self, errors):
+    """
+    Pack is not applicable for this class.
+    """
+    # TODO: use better exception.
+    raise NotImplementedError()
+
   def Clean(self, errors):
     """
     Clean this solution.
@@ -1688,6 +1789,10 @@ class Rime(object):
     elif cmd == 'clean':
       success = obj.Clean(errors)
       Console.Print("Finished Clean.")
+      Console.Print()
+    elif cmd == 'pack':
+      success = obj.Pack(errors)
+      Console.Print("Finished Pack.")
       Console.Print()
     else:
       Console.PrintError("Unknown command: %s" % cmd)
