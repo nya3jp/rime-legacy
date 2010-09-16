@@ -1133,7 +1133,7 @@ class Tests(TargetObjectBase):
     except:
       errors.Exception(self)
       return False
-    if not os.path.isdir(self.out_dir):
+    if not os.path.isdir(self.src_dir):
       try:
         FileUtil.MakeDir(self.out_dir)
       except:
