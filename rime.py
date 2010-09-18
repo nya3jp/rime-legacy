@@ -77,7 +77,7 @@ class FileNames(object):
   JUDGE_EXT = '.judge'
   CACHE_EXT = '.cache'
   LOG_EXT = '.log'
-
+  VALIDATION_EXT = '.validation'
 
 
 class FileUtil(object):
@@ -179,7 +179,19 @@ class FileUtil(object):
       if os.path.isfile(bin) and os.access(bin, os.X_OK):
         return bin
     return None
-      
+
+  @classmethod
+  def ReadFile(cls, name):
+    try:
+      f = open(name)
+      return f.read()
+    except:
+      return None
+    finally:
+      try:
+        f.close()
+      except:
+        pass
 
 
 class Console(object):
@@ -289,7 +301,8 @@ class Console(object):
     Barely print messages.
     Used to print logs such as compiler's output.
     """
-    print log,
+    for line in log.splitlines():
+      Console.Print("> ", line)
 
 # Call Init() on load time.
 Console.Init()
@@ -517,14 +530,15 @@ class FileBasedCode(Code):
     except Exception, e:
       return RunResult(str(e), None)
 
-  def Run(self, args, cwd, input, output, timeout):
+  def Run(self, args, cwd, input, output, timeout, redirect_error=False):
     """
     Run the code and return RunResult.
     """
     try:
       return self._ExecForRun(
         args=self.run_args+args, cwd=cwd,
-        input=input, output=output, timeout=timeout)
+        input=input, output=output, timeout=timeout,
+        redirect_error=redirect_error)
     except Exception, e:
       return RunResult(str(e), None)
 
@@ -554,25 +568,20 @@ class FileBasedCode(Code):
         pass
 
   def ReadCompileLog(self):
-    try:
-      logfile = open(os.path.join(self.out_dir, self.log_name), 'r')
-      return logfile.read()
-    except:
-      return None
-    finally:
-      try:
-        logfile.close()
-      except:
-        pass
+    return FileUtil.ReadFile(os.path.join(self.out_dir, self.log_name))
 
-  def _ExecForRun(self, args, cwd, input, output, timeout):
+  def _ExecForRun(self, args, cwd, input, output, timeout, redirect_error):
     try:
       devnull = open(os.devnull, 'w')
       infile = open(input, 'r')
       outfile = open(output, 'w')
+      if redirect_error:
+        errfile = subprocess.STDOUT
+      else:
+        errfile = devnull
       return self._ExecInternal(
         args=args, cwd=cwd,
-        stdin=infile, stdout=outfile, stderr=devnull, timeout=timeout)
+        stdin=infile, stdout=outfile, stderr=errfile, timeout=timeout)
     finally:
       try:
         devnull.close()
@@ -1226,19 +1235,25 @@ class Tests(TargetObjectBase):
         "VALIDATE", self,
         "[%d/%d] %s" % (i+1, len(infiles), infile),
         overwrite=True)
+      validationfile = os.path.splitext(infile)[0] + FileNames.VALIDATION_EXT
       res = self.validator.Run(
         args=[], cwd=self.out_dir,
-        input=os.path.join(self.out_dir, infile), output=os.devnull,
-        timeout=None)
+        input=os.path.join(self.out_dir, infile),
+        output=os.path.join(self.out_dir, validationfile),
+        timeout=None,
+        redirect_error=True)
       if res.status == RunResult.NG:
         errors.Error(self,
                      "%s: Validation Failed" % self.validator.src_name)
+        log = FileUtil.ReadFile(os.path.join(self.out_dir, validationfile))
+        if log:
+          Console.PrintLog(log)
         return False
       elif res.status != RunResult.OK:
         errors.Error(self,
                      "%s: Validator Failed: %s" % (self.validator.src_name, res.status))
         return False
-    Console.PrintAction("VALIDATE", self, "PASSED", overwrite=True)
+    Console.PrintAction("VALIDATE", self, "OK", overwrite=True)
     return True
 
   def _CompileJudge(self, errors):
