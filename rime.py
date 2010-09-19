@@ -866,11 +866,16 @@ class TargetObjectBase(ConfigurableObject):
     stamp_mtime = self.GetCacheStamp()
     if stamp_mtime is None:
       return False
+    if not os.path.isfile(self.config_file):
+      config_mtime = datetime.datetime.min
+    else:
+      config_mtime = FileUtil.GetModified(self.config_file)
+    cache_mtime = max(stamp_mtime, config_mtime)
     if not os.path.isdir(self.src_dir):
       return False
     for name in ['.'] + FileUtil.ListDir(self.src_dir, True):
       if (FileUtil.GetModified(os.path.join(self.src_dir, name)) >
-        stamp_mtime):
+          cache_mtime):
         return False
     return True
 
