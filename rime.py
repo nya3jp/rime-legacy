@@ -1926,7 +1926,7 @@ class Rime(object):
     (options, args) = parser.parse_args(args[1:])
     cmd = args[0].lower() if args else None
     if len(args) >= 2:
-      params = args[2:]
+      params = args[1:]
     else:
       params = []
     return (cmd, params, options)
