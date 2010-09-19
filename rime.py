@@ -1366,6 +1366,12 @@ class Tests(TargetObjectBase):
     if result.cached:
       status_row += [" ", "(cached)"]
     Console.PrintAction("TEST", solution, overwrite=True, *status_row)
+    if solution.IsCorrect() and not result.good:
+      assert result.ruling_file
+      judgefile = os.path.splitext(result.ruling_file)[0] + FileNames.JUDGE_EXT
+      log = FileUtil.ReadFile(os.path.join(solution.out_dir, judgefile))
+      if log:
+        Console.PrintLog(log)
     return [result]
 
   def _TestSolutionWithChallengeCases(self, solution, errors):
@@ -1512,7 +1518,8 @@ class Tests(TargetObjectBase):
             '--difffile', os.path.join(self.out_dir, difffile),
             '--outfile', os.path.join(solution.out_dir, outfile)],
       cwd=self.out_dir,
-      input=os.devnull, output=os.path.join(solution.out_dir, judgefile),
+      input=os.devnull,
+      output=os.path.join(solution.out_dir, judgefile),
       timeout=None)
     if res.status == RunResult.OK:
       return (TestResult.AC, time)
