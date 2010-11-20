@@ -109,7 +109,7 @@ class FileUtil(object):
 
   @classmethod
   def Touch(cls, file):
-    open(file, 'a').close()
+    open(file, 'w').close()
 
   @classmethod
   def ListDir(cls, dir, recurse=False):
