@@ -1715,7 +1715,7 @@ class Solution(TargetObjectBase):
     """
     #Console.PrintAction("BUILD", self)
     if self.IsBuildCached():
-      #Console.PrintAction("BUILD", self, "(cached)", overwrite=True)
+      Console.PrintAction("COMPILE", self, "up-to-date")
       return True
     if not self.code.QUIET_COMPILE:
       Console.PrintAction("COMPILE", self)
