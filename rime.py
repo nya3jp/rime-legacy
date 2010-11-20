@@ -219,6 +219,9 @@ class Console(object):
   UP = ''
   KILL = ''
 
+  # State for overwriting.
+  last_overwritable = False
+
   @classmethod
   def Init(cls):
     """
@@ -262,12 +265,14 @@ class Console(object):
     Print one line.
     Each argument is either ordinal string or control code.
     """
-    overwrite = kwargs.get('overwrite')
+    overwritable = bool(kwargs.get('overwritable'))
+    overwriting = bool(kwargs.get('overwriting'))
     msg = "".join(args)
-    if overwrite and cls.cap.overwrite:
+    if overwriting and cls.last_overwritable and cls.cap.overwrite:
       print cls.UP + "\r" + msg + cls.KILL
     else:
       print msg
+    cls.last_overwritable = overwritable
 
   @classmethod
   def PrintAction(cls, action, obj, *args, **kwargs):
@@ -1140,9 +1145,7 @@ class Tests(TargetObjectBase):
     """
     Build tests.
     """
-    #Console.PrintAction("BUILD", self)
     if self.IsBuildCached():
-      #Console.PrintAction("BUILD", self, "(cached)", overwrite=True)
       return True
     try:
       FileUtil.RemoveTree(self.out_dir)
@@ -1235,13 +1238,13 @@ class Tests(TargetObjectBase):
     """
     if self.validator is None:
       return True
-    Console.PrintAction("VALIDATE", self)
+    Console.PrintAction("VALIDATE", self, overwritable=True)
     infiles = self.ListInputFiles()
     for (i, infile) in enumerate(infiles):
       Console.PrintAction(
         "VALIDATE", self,
         "[%d/%d] %s" % (i+1, len(infiles), infile),
-        overwrite=True)
+        overwriting=True, overwritable=True)
       validationfile = os.path.splitext(infile)[0] + FileNames.VALIDATION_EXT
       res = self.validator.Run(
         args=[], cwd=self.out_dir,
@@ -1260,7 +1263,7 @@ class Tests(TargetObjectBase):
         errors.Error(self,
                      "%s: Validator Failed: %s" % (self.validator.src_name, res.status))
         return False
-    Console.PrintAction("VALIDATE", self, "OK", overwrite=True)
+    Console.PrintAction("VALIDATE", self, "OK", overwriting=True)
     return True
 
   def _CompileJudge(self, errors):
@@ -1298,7 +1301,7 @@ class Tests(TargetObjectBase):
     if reference_solution is None:
       errors.Error(self, "Reference solution is not available")
       return False
-    Console.PrintAction("REFRUN", reference_solution)
+    Console.PrintAction("REFRUN", reference_solution, overwritable=True)
     infiles = self.ListInputFiles()
     for (i, infile) in enumerate(infiles):
       difffile = os.path.splitext(infile)[0] + FileNames.DIFF_EXT
@@ -1307,7 +1310,7 @@ class Tests(TargetObjectBase):
       Console.PrintAction(
         "REFRUN", reference_solution,
         "[%d/%d] %s" % (i+1, len(infiles), infile),
-        overwrite=True)
+        overwriting=True, overwritable=True)
       res = reference_solution.Run(
         args=[], cwd=self.out_dir,
         input=os.path.join(self.out_dir, infile),
@@ -1318,7 +1321,7 @@ class Tests(TargetObjectBase):
         return False
     Console.PrintAction(
       "REFRUN", reference_solution,
-      overwrite=True)
+      overwriting=True)
     return True
 
   def Test(self, errors):
@@ -1350,7 +1353,7 @@ class Tests(TargetObjectBase):
       result.passed = False
       result.detail = "Compile Error"
       return [result]
-    Console.PrintAction("TEST", solution)
+    Console.PrintAction("TEST", solution, overwritable=True)
     if not solution.IsCorrect() and solution.challenge_cases:
       result = self._TestSolutionWithChallengeCases(solution, errors)
     else:
@@ -1372,7 +1375,7 @@ class Tests(TargetObjectBase):
       result.detail]
     if result.cached:
       status_row += [" ", "(cached)"]
-    Console.PrintAction("TEST", solution, overwrite=True, *status_row)
+    Console.PrintAction("TEST", solution, overwriting=True, *status_row)
     if solution.IsCorrect() and not result.good:
       assert result.ruling_file
       judgefile = os.path.splitext(result.ruling_file)[0] + FileNames.JUDGE_EXT
@@ -1406,7 +1409,7 @@ class Tests(TargetObjectBase):
       Console.PrintAction(
         "TEST", solution,
         "[%d/%d] %s" % (i+1, len(challenge_cases), infile),
-        overwrite=True)
+        overwriting=True, overwritable=True)
       (verdict, time, cached) = self._TestOneCase(
         solution, infile, cookie, errors)
       if cached:
@@ -1445,7 +1448,7 @@ class Tests(TargetObjectBase):
       Console.PrintAction(
         "TEST", solution,
         "[%d/%d] %s" % (i+1, len(infiles), infile),
-        overwrite=True)
+        overwriting=True, overwritable=True)
       (verdict, time, cached) = self._TestOneCase(
         solution, infile, cookie, errors)
       if cached:
@@ -1545,7 +1548,7 @@ class Tests(TargetObjectBase):
       if not self.Build(errors):
         return False
     infiles = self.ListInputFiles()
-    Console.PrintAction("PACK", self)
+    Console.PrintAction("PACK", self, overwritable=True)
     if not os.path.isdir(self.pack_dir):
       try:
         FileUtil.MakeDir(self.pack_dir)
@@ -1562,14 +1565,14 @@ class Tests(TargetObjectBase):
           "PACK",
           self,
           "%s -> %s" % (infile, packed_infile),
-          overwrite=True)
+          overwriting=True, overwritable=True)
         FileUtil.CopyFile(os.path.join(self.out_dir, infile),
                           os.path.join(self.pack_dir, packed_infile))
         Console.PrintAction(
           "PACK",
           self,
           "%s -> %s" % (difffile, packed_difffile),
-          overwrite=True)
+          overwriting=True, overwritable=True)
         FileUtil.CopyFile(os.path.join(self.out_dir, difffile),
                           os.path.join(self.pack_dir, packed_difffile))
       except:
@@ -1582,7 +1585,7 @@ class Tests(TargetObjectBase):
       "PACK",
       self,
       " ".join(tar_args),
-      overwrite=True)
+      overwriting=True, overwritable=True)
     ret = -1
     try:
       devnull = open(os.devnull, 'w')
@@ -1606,7 +1609,7 @@ class Tests(TargetObjectBase):
       "PACK",
       self,
       FileNames.TESTS_PACKED_TARBALL,
-      overwrite=True)
+      overwriting=True)
     return True
 
   def Clean(self, errors):
