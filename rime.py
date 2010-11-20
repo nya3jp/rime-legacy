@@ -200,8 +200,10 @@ class Console(object):
   """
 
   # Capabilities of the console.
-  overwritible = False
-  colorable = False
+  class Capability(object):
+    overwrite = False
+    color = False
+  cap = Capability()
 
   # Console codes.
   # Set in _SetupColors() if available.
@@ -228,9 +230,9 @@ class Console(object):
       import curses
       curses.setupterm()
       if cls._tigetstr('cuu1'):
-        cls.overwritible = True
+        cls.cap.overwrite = True
       if cls._tigetstr('setaf'):
-        cls.colorable = True
+        cls.cap.color = True
         cls._SetupColors()
     except:
       pass
@@ -262,7 +264,7 @@ class Console(object):
     """
     overwrite = kwargs.get('overwrite')
     msg = "".join(args)
-    if overwrite and cls.overwritible:
+    if overwrite and cls.cap.overwrite:
       print cls.UP + "\r" + msg + cls.KILL
     else:
       print msg
