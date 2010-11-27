@@ -950,11 +950,12 @@ class RimeRoot(TargetObjectBase):
   def _PostLoad(self, errors):
     # Chain-load problems.
     self.problems = []
-    for name in sorted(FileUtil.ListDir(self.base_dir)):
+    for name in FileUtil.ListDir(self.base_dir):
       dir = os.path.join(self.base_dir, name)
       if Problem.CanLoadFrom(dir):
         problem = Problem(name, dir, self, self.options, errors)
         self.problems.append(problem)
+    self.problems.sort(lambda a, b: cmp(a.id, b.id))
 
   def FindByBaseDir(self, base_dir):
     if self.base_dir == base_dir:
@@ -1025,6 +1026,8 @@ class Problem(TargetObjectBase):
       errors.Error(self, "Time limit is not specified")
     else:
       self.timeout = self.config['TIME_LIMIT']
+    # Decide ID.
+    self.id = self.config.get('ID', self.name)
     # Chain-load solutions.
     self.solutions = []
     for name in sorted(FileUtil.ListDir(self.base_dir)):
