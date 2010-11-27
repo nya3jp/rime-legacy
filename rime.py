@@ -786,7 +786,7 @@ class ConfigurableObject(object):
       real_config_file = os.devnull
     # Setup input/output directionaries and evaluate config.
     self.config = dict()
-    self._export_dict = dict(_obj=self)
+    self._export_dict = dict()
     self._PreLoad(*args, **kwargs)
     # Export functions marked with @Export.
     for name in dir(self):
@@ -945,6 +945,7 @@ class RimeRoot(TargetObjectBase):
 
   def _PreLoad(self, errors):
     self.root = self
+    self._export_dict["root"] = self
 
   def _PostLoad(self, errors):
     # Chain-load problems.
@@ -1015,6 +1016,8 @@ class Problem(TargetObjectBase):
   def _PreLoad(self, errors):
     self.root = self.parent
     self.out_dir = os.path.join(self.base_dir, FileNames.RIME_OUT_DIR)
+    self._export_dict["problem"] = self
+    self._export_dict["root"] = self.root
 
   def _PostLoad(self, errors):
     # Read time limit.
@@ -1135,6 +1138,9 @@ class Tests(TargetObjectBase):
     if not os.path.isfile(self.config_file):
       errors.Warning(self,
                      "%s does not exist" % self.CONFIG_FILE)
+    self._export_dict["tests"] = self
+    self._export_dict["root"] = self.root
+    self._export_dict["problem"] = self.problem
 
   def _PostLoad(self, errors):
     # TODO: print warnings if no validator / judge is specified.
@@ -1668,6 +1674,9 @@ class Solution(TargetObjectBase):
     self.stamp_file = os.path.join(self.out_dir, FileNames.STAMP_FILE)
     self.code = None
     self._AddCodeRegisterer('code', 'solution')
+    self._export_dict["solution"] = self
+    self._export_dict["root"] = self.root
+    self._export_dict["problem"] = self.problem
 
   def _PostLoad(self, errors):
     source_exts = {
