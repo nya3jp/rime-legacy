@@ -786,7 +786,7 @@ class ConfigurableObject(object):
       real_config_file = os.devnull
     # Setup input/output directionaries and evaluate config.
     self.config = dict()
-    self._export_dict = dict()
+    self._export_dict = dict(_obj=self)
     self._PreLoad(*args, **kwargs)
     # Export functions marked with @Export.
     for name in dir(self):
