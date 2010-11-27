@@ -65,11 +65,6 @@ class FileNames(object):
 
   STAMP_FILE = '.stamp'
 
-  RIME_OUT_DIR = 'rime-out'
-  TESTS_DIR = 'tests'
-  TESTS_PACKED_DIR = 'tests.packed'
-  TESTS_PACKED_TARBALL = 'tests.tar.gz'
-
   IN_EXT = '.in'
   DIFF_EXT = '.diff'
   OUT_EXT = '.out'
@@ -78,6 +73,16 @@ class FileNames(object):
   CACHE_EXT = '.cache'
   LOG_EXT = '.log'
   VALIDATION_EXT = '.validation'
+
+  RIME_OUT_DIR = 'rime-out'
+  TESTS_DIR = 'tests'
+  TESTS_PACKED_DIR = 'tests.packed'
+  TESTS_PACKED_TARBALL = 'tests.tar.gz'
+  CONCAT_PREFIX = '.ALL'
+  CONCAT_INFILE = CONCAT_PREFIX + IN_EXT
+  CONCAT_DIFFFILE = CONCAT_PREFIX + DIFF_EXT
+  SEPARATOR_FILE = 'seperator'
+  TERMINATOR_FILE = 'terminator'
 
 
 class FileUtil(object):
@@ -108,14 +113,15 @@ class FileUtil(object):
     return os.path.getmtime(file)
 
   @classmethod
-  def Touch(cls, file):
+  def CreateEmptyFile(cls, file):
     open(file, 'w').close()
 
   @classmethod
   def ListDir(cls, dir, recurse=False):
     files = []
     try:
-      files = os.listdir(dir)
+      files = filter(lambda x: not x.startswith("."),
+                     os.listdir(dir))
       if recurse:
         for subfile in files[:]:
           subdir = os.path.join(dir, subfile)
@@ -187,6 +193,34 @@ class FileUtil(object):
       return f.read()
     except:
       return None
+    finally:
+      try:
+        f.close()
+      except:
+        pass
+
+  @classmethod
+  def WriteFile(cls, content, name):
+    try:
+      f = open(name, 'w')
+      f.write(content)
+      return True
+    except:
+      return False
+    finally:
+      try:
+        f.close()
+      except:
+        pass
+
+  @classmethod
+  def AppendFile(cls, content, name):
+    try:
+      f = open(name, 'a')
+      f.write(content)
+      return True
+    except:
+      return False
     finally:
       try:
         f.close()
@@ -424,19 +458,29 @@ class TestResult(object):
     """
     return (self.files and all([c.verdict == TestResult.AC for c in self.cases.values()]))
 
+  def GetTimeStats(self):
+    """
+    Get time statistics.
+    """
+    if (FileNames.CONCAT_INFILE in self.cases and
+        self.cases[FileNames.CONCAT_INFILE].time is not None):
+      return "(%.2f/%.2f/%.2f)" % (self.GetMaxTime(), self.GetTotalTime(),
+                                   self.cases[FileNames.CONCAT_INFILE].time)
+    return "(%.2f/%.2f)" % (self.GetMaxTime(), self.GetTotalTime())
+
   def GetMaxTime(self):
     """
     Get maximum time.
     All case should be accepted.
     """
-    return max([c.time for c in self.cases.values()])
+    return max([c.time for k, c in self.cases.items() if not k.startswith(".")])
 
   def GetTotalTime(self):
     """
     Get total time.
     All case should be accepted.
     """
-    return sum([c.time for c in self.cases.values()])
+    return sum([c.time for k, c in self.cases.items() if not k.startswith(".")])
 
   @classmethod
   def CompareForListing(cls, a, b):
@@ -853,9 +897,9 @@ class TargetObjectBase(ConfigurableObject):
 
   def SetCacheStamp(self):
     """
-    Touch stamp file.
+    Update stamp file.
     """
-    FileUtil.Touch(self.stamp_file)
+    FileUtil.CreateEmptyFile(self.stamp_file)
 
   def GetCacheStamp(self):
     """
@@ -948,6 +992,7 @@ class RimeRoot(TargetObjectBase):
     self._export_dict["root"] = self
 
   def _PostLoad(self, errors):
+    self.concat_test = self.config.get('CONCAT_TEST')
     # Chain-load problems.
     self.problems = []
     for name in FileUtil.ListDir(self.base_dir):
@@ -1132,6 +1177,9 @@ class Tests(TargetObjectBase):
     self.out_dir = os.path.join(self.problem.out_dir, FileNames.TESTS_DIR)
     self.pack_dir = os.path.join(self.problem.out_dir, FileNames.TESTS_PACKED_DIR)
     self.stamp_file = os.path.join(self.out_dir, FileNames.STAMP_FILE)
+    self.separator_file = os.path.join(self.out_dir, FileNames.SEPARATOR_FILE)
+    self.terminator_file = os.path.join(self.out_dir, FileNames.TERMINATOR_FILE)
+    self.concat_test = self.root.concat_test
     self.generators = []
     self.validators = []
     self.judge = None
@@ -1187,6 +1235,8 @@ class Tests(TargetObjectBase):
       if not self._CompileReferenceSolution(errors):
         return False
       if not self._RunReferenceSolution(errors):
+        return False
+      if not self._GenerateConcatTest(errors):
         return False
     try:
       self.SetCacheStamp()
@@ -1335,6 +1385,43 @@ class Tests(TargetObjectBase):
       overwriting=True)
     return True
 
+  def _GenerateConcatTest(self, errors):
+    if not self.concat_test:
+      return True
+    Console.PrintAction("GENERATE", self, overwritable=True)
+    concat_infile = FileNames.CONCAT_INFILE
+    concat_difffile = FileNames.CONCAT_DIFFFILE
+    FileUtil.CreateEmptyFile(os.path.join(self.out_dir, concat_infile))
+    FileUtil.CreateEmptyFile(os.path.join(self.out_dir, concat_difffile))
+    separator = FileUtil.ReadFile(self.separator_file)
+    terminator = FileUtil.ReadFile(self.terminator_file)
+    infiles = self.ListInputFiles()
+    for (i, infile) in enumerate(infiles):
+      infile = os.path.join(self.out_dir, infile)
+      difffile = os.path.splitext(infile)[0] + FileNames.DIFF_EXT
+      Console.PrintAction(
+        "GENERATE", self,
+        "[%d/%d] %s / %s" % (i+1, len(infiles),
+                             concat_infile, concat_difffile),
+        overwriting=True, overwritable=True)
+      in_content = FileUtil.ReadFile(infile)
+      diff_content = FileUtil.ReadFile(difffile)
+      if i > 0:
+        FileUtil.AppendFile(separator, os.path.join(self.out_dir, concat_infile))
+      FileUtil.AppendFile(in_content, os.path.join(self.out_dir, concat_infile))
+      FileUtil.AppendFile(diff_content, os.path.join(self.out_dir, concat_difffile))
+    FileUtil.AppendFile(terminator, os.path.join(self.out_dir, concat_infile))
+    Console.PrintAction(
+      "GENERATE", self,
+      "%s (%d bytes) / %s (%d bytes)" % (
+        concat_infile,
+        os.path.getsize(os.path.join(self.out_dir, concat_infile)),
+        concat_difffile,
+        os.path.getsize(os.path.join(self.out_dir, concat_difffile)),
+        ),
+      overwriting=True)
+    return True
+
   def Test(self, errors):
     """
     Test all solutions.
@@ -1372,7 +1459,7 @@ class Tests(TargetObjectBase):
     if result.good and result.passed:
       assert not result.detail
       if result.IsTimeStatsAvailable():
-        result.detail = "(%.2f/%.2f)" % (result.GetMaxTime(), result.GetTotalTime())
+        result.detail = result.GetTimeStats()
       else:
         result.detail = "(no test)"
     else:
@@ -1451,7 +1538,7 @@ class Tests(TargetObjectBase):
     Test a solution without challenge cases.
     The solution can be marked as wrong but without challenge cases.
     """
-    infiles = self.ListInputFiles()
+    infiles = self.ListInputFiles(include_concat=True)
     cookie = solution.GetCacheStamp()
     result = TestResult(self.problem, solution, infiles)
     # Try all cases.
@@ -1460,8 +1547,9 @@ class Tests(TargetObjectBase):
         "TEST", solution,
         "[%d/%d] %s" % (i+1, len(infiles), infile),
         overwriting=True, overwritable=True)
+      ignore_timeout = (infile == FileNames.CONCAT_INFILE)
       (verdict, time, cached) = self._TestOneCase(
-        solution, infile, cookie, errors)
+        solution, infile, cookie, errors, ignore_timeout=ignore_timeout)
       if cached:
         result.cached = True
       result.cases[infile].verdict = verdict
@@ -1490,7 +1578,7 @@ class Tests(TargetObjectBase):
         result.detail = "Unexpectedly Passed"
     return result
 
-  def _TestOneCase(self, solution, infile, cookie, errors):
+  def _TestOneCase(self, solution, infile, cookie, errors, ignore_timeout=False):
     """
     Test a solution with one case.
     Cache results if option is set.
@@ -1508,14 +1596,14 @@ class Tests(TargetObjectBase):
           cached_cookie = None
         if cached_cookie == cookie:
           return tuple(list(result)+[True])
-    result = self._TestOneCaseNoCache(solution, infile)
+    result = self._TestOneCaseNoCache(solution, infile, ignore_timeout=ignore_timeout)
     try:
       FileUtil.PickleSave((cookie, result), cachefile)
     except:
       errors.Exception(solution)
     return tuple(list(result)+[False])
 
-  def _TestOneCaseNoCache(self, solution, infile):
+  def _TestOneCaseNoCache(self, solution, infile, ignore_timeout=False):
     """
     Test a solution with one case.
     Never cache results.
@@ -1524,11 +1612,14 @@ class Tests(TargetObjectBase):
     outfile = os.path.splitext(infile)[0] + FileNames.OUT_EXT
     difffile = os.path.splitext(infile)[0] + FileNames.DIFF_EXT
     judgefile = os.path.splitext(infile)[0] + FileNames.JUDGE_EXT
+    timeout = self.problem.timeout
+    if ignore_timeout:
+      timeout = None
     res = solution.Run(
       args=[], cwd=solution.out_dir,
       input=os.path.join(self.out_dir, infile),
       output=os.path.join(solution.out_dir, outfile),
-      timeout=self.problem.timeout)
+      timeout=timeout)
     if res.status == RunResult.TLE:
       return (TestResult.TLE, None)
     if res.status != RunResult.OK:
@@ -1633,7 +1724,7 @@ class Tests(TargetObjectBase):
     except:
       errors.Exception(self)
 
-  def ListInputFiles(self):
+  def ListInputFiles(self, include_concat=False):
     """
     Enumerate input files.
     """
@@ -1644,7 +1735,11 @@ class Tests(TargetObjectBase):
       if not os.path.isfile(os.path.join(self.out_dir, infile)):
         continue
       infiles.append(infile)
-    return self._SortInputFiles(infiles)
+    infiles = self._SortInputFiles(infiles)
+    if include_concat:
+      if os.path.isfile(os.path.join(self.out_dir, FileNames.CONCAT_INFILE)):
+        infiles.append(FileNames.CONCAT_INFILE)
+    return infiles
 
   def _SortInputFiles(self, infiles):
     """
@@ -1901,7 +1996,7 @@ class Rime(object):
       if result.good:
         if result.passed:
           if result.IsTimeStatsAvailable():
-            status_row += ["(%.2f/%.2f)" % (result.GetMaxTime(), result.GetTotalTime())]
+            status_row += [result.GetTimeStats()]
           else:
             status_row += ["(no test)"]
         else:

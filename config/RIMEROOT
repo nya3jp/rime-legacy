@@ -4,8 +4,13 @@
 ## RIME 一般設定ファイル
 ##
 
+# (1). コンテストに関する基本設定
 
-# (1). Wiki 生成のための設定
+# 結合テストケースを使ったテストを行うか
+CONCAT_TEST = False
+
+
+# (2). Wiki 生成のための設定
 
 WIKI_URL = "http://example.com/pukiwiki/"
 WIKI_STATUS_PAGE = "ステータス"
