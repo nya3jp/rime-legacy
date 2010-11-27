@@ -1127,10 +1127,10 @@ class Tests(TargetObjectBase):
     self.pack_dir = os.path.join(self.problem.out_dir, FileNames.TESTS_PACKED_DIR)
     self.stamp_file = os.path.join(self.out_dir, FileNames.STAMP_FILE)
     self.generators = []
-    self.validator = None
+    self.validators = []
     self.judge = None
     self._AddCodeRegisterer('generators', 'generator')
-    self._AddCodeRegisterer('validator', 'validator')
+    self._AddCodeRegisterer('validators', 'validator')
     self._AddCodeRegisterer('judge', 'judge')
     if not os.path.isfile(self.config_file):
       errors.Warning(self,
@@ -1218,52 +1218,54 @@ class Tests(TargetObjectBase):
 
   def _CompileValidator(self, errors):
     """
-    Compile input validator.
+    Compile input validators.
     """
-    if self.validator is None:
-      return True
-    if not self.validator.QUIET_COMPILE:
-      Console.PrintAction("COMPILE", self, self.validator.src_name)
-    res = self.validator.Compile()
-    if res.status != RunResult.OK:
-      errors.Error(self,
-                   "%s: Compile Error (%s)" % (self.validator.src_name, res.status))
-      Console.PrintLog(self.validator.ReadCompileLog())
-      return False
+    for validator in self.validators:
+      if not validator.QUIET_COMPILE:
+        Console.PrintAction("COMPILE", self, validator.src_name)
+      res = validator.Compile()
+      if res.status != RunResult.OK:
+        errors.Error(self,
+                     "%s: Compile Error (%s)" % (validator.src_name, res.status))
+        Console.PrintLog(validator.ReadCompileLog())
+        return False
     return True
 
   def _RunValidator(self, errors):
     """
-    Run input validator.
+    Run input validators.
     """
-    if self.validator is None:
+    if not self.validators:
+      Console.PrintAction("VALIDATE", self, "skipping: validator unavailable")
+      errors.Warning(self, "Validator Unavailable")
       return True
-    Console.PrintAction("VALIDATE", self, overwritable=True)
-    infiles = self.ListInputFiles()
-    for (i, infile) in enumerate(infiles):
-      Console.PrintAction(
-        "VALIDATE", self,
-        "[%d/%d] %s" % (i+1, len(infiles), infile),
-        overwriting=True, overwritable=True)
-      validationfile = os.path.splitext(infile)[0] + FileNames.VALIDATION_EXT
-      res = self.validator.Run(
-        args=[], cwd=self.out_dir,
-        input=os.path.join(self.out_dir, infile),
-        output=os.path.join(self.out_dir, validationfile),
-        timeout=None,
-        redirect_error=True)
-      if res.status == RunResult.NG:
-        errors.Error(self,
-                     "%s: Validation Failed" % self.validator.src_name)
-        log = FileUtil.ReadFile(os.path.join(self.out_dir, validationfile))
-        if log:
-          Console.PrintLog(log)
-        return False
-      elif res.status != RunResult.OK:
-        errors.Error(self,
-                     "%s: Validator Failed: %s" % (self.validator.src_name, res.status))
-        return False
-    Console.PrintAction("VALIDATE", self, "OK", overwriting=True)
+    for validator in self.validators:
+      Console.PrintAction("VALIDATE", self, overwritable=True)
+      infiles = self.ListInputFiles()
+      for (i, infile) in enumerate(infiles):
+        Console.PrintAction(
+          "VALIDATE", self,
+          "[%d/%d] %s" % (i+1, len(infiles), infile),
+          overwriting=True, overwritable=True)
+        validationfile = os.path.splitext(infile)[0] + FileNames.VALIDATION_EXT
+        res = validator.Run(
+          args=[], cwd=self.out_dir,
+          input=os.path.join(self.out_dir, infile),
+          output=os.path.join(self.out_dir, validationfile),
+          timeout=None,
+          redirect_error=True)
+        if res.status == RunResult.NG:
+          errors.Error(self,
+                       "%s: Validation Failed" % validator.src_name)
+          log = FileUtil.ReadFile(os.path.join(self.out_dir, validationfile))
+          if log:
+            Console.PrintLog(log)
+          return False
+        elif res.status != RunResult.OK:
+          errors.Error(self,
+                       "%s: Validator Failed: %s" % (validator.src_name, res.status))
+          return False
+      Console.PrintAction("VALIDATE", self, "OK", overwriting=True)
     return True
 
   def _CompileJudge(self, errors):
