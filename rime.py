@@ -24,18 +24,19 @@
 # Author: Shuhei Takahashi
 #
 
-import sys
-import os
-import time
-import re
-import optparse
-import imp
-import subprocess
-import threading
-import signal
-import shutil
-import pickle
 import commands
+import datetime
+import imp
+import optparse
+import os
+import pickle
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+import time
 
 
 HELP_MESSAGE = """\
