@@ -24,13 +24,10 @@
 # Author: Shuhei Takahashi
 #
 
-import commands
 import datetime
-import imp
 import optparse
 import os
 import pickle
-import re
 import shutil
 import signal
 import subprocess
@@ -52,6 +49,10 @@ Options:
   -h, --help         show this help message and exit
   -C, --cache-tests  cache test results
 """
+
+
+class RimeConfigurationError(Exception):
+  pass
 
 
 class FileNames(object):
@@ -178,11 +179,11 @@ class FileUtil(object):
   @classmethod
   def LocateBinary(cls, name):
     if 'PATH' in os.environ:
-      path = os.environ['PATH']
+      paths = os.environ['PATH']
     else:
-      path = os.defpath
-    for dir in path.split(os.pathsep):
-      bin = os.path.join(dir, name)
+      paths = os.defpath
+    for path in paths.split(os.pathsep):
+      bin = os.path.join(path, name)
       if os.path.isfile(bin) and os.access(bin, os.X_OK):
         return bin
     return None
@@ -344,7 +345,7 @@ class Console(object):
     Used to print logs such as compiler's output.
     """
     for line in log.splitlines():
-      Console.Print("> ", line)
+      cls.Print("> ", line)
 
 # Call Init() on load time.
 Console.Init()
@@ -445,8 +446,8 @@ class TestResult(object):
     self.solution = solution
     self.files = files[:]
     self.cases = dict(
-      [(file, SingleCaseResult(TestResult.NA, None))
-       for file in files])
+      [(f, SingleCaseResult(TestResult.NA, None))
+       for f in files])
     self.good = None
     self.passed = None
     self.detail = None
@@ -535,7 +536,7 @@ class Code(object):
   def Compile(self):
     raise NotImplementedError()
 
-  def Run(self, args, cwd, input, output, timeout):
+  def Run(self, args, cwd, input, output, timeout, redirect_error=False):
     raise NotImplementedError()
 
   def Clean(self):
@@ -756,7 +757,7 @@ class DiffCode(Code):
       return RunResult("%s: diff" % RunResult.PM, None)
     return RunResult(RunResult.OK, 0.0)
 
-  def Run(self, args, cwd, input, output, timeout):
+  def Run(self, args, cwd, input, output, timeout, redirect_error=False):
     parser = optparse.OptionParser()
     parser.add_option('-i', '--infile', dest='infile')
     parser.add_option('-d', '--difffile', dest='difffile')
@@ -767,10 +768,14 @@ class DiffCode(Code):
       devnull = open(os.devnull, 'w')
       infile = open(input, 'r')
       outfile = open(output, 'w')
+      if redirect_error:
+        errfile = subprocess.STDOUT
+      else:
+        errfile = devnull
       try:
         ret = subprocess.call(run_args, cwd=cwd,
-                              stdin=infile, stdout=outfile, stderr=devnull)
-      except OSError, e:
+                              stdin=infile, stdout=outfile, stderr=errfile)
+      except OSError:
         return RunResult(RunResult.RE, None)
     finally:
       try:
@@ -808,7 +813,7 @@ class ConfigurableObject(object):
     """
     return os.path.isfile(os.path.join(base_dir, cls.CONFIG_FILE))
 
-  def __init__(self, name, base_dir, parent, *args, **kwargs):
+  def __init__(self, name, base_dir, parent, errors):
     """
     Loads config file and constructs a new instance of
     configured object.
@@ -832,7 +837,7 @@ class ConfigurableObject(object):
     # Setup input/output directionaries and evaluate config.
     self.config = dict()
     self._export_dict = dict()
-    self._PreLoad(*args, **kwargs)
+    self._PreLoad(errors)
     # Export functions marked with @Export.
     for name in dir(self):
       try:
@@ -851,16 +856,16 @@ class ConfigurableObject(object):
         f.close()
       except:
         pass
-    self._PostLoad(*args, **kwargs)
+    self._PostLoad(errors)
 
-  def _PreLoad(self, *args, **kwargs):
+  def _PreLoad(self, errors):
     """
     Called just before evaluation of config.
     Should setup symbols to export via self._export_dict.
     """
     pass
 
-  def _PostLoad(self, *args, **kwargs):
+  def _PostLoad(self, errors):
     """
     Called just after evaluation of config.
     Do some post-processing of configs here.
@@ -883,9 +888,9 @@ class TargetObjectBase(ConfigurableObject):
   target objects.
   """
 
-  def __init__(self, name, base_dir, parent, options, errors, *args, **kwargs):
+  def __init__(self, name, base_dir, parent, options, errors):
     self.options = options
-    super(TargetObjectBase, self).__init__(name, base_dir, parent, errors, *args, **kwargs)
+    super(TargetObjectBase, self).__init__(name, base_dir, parent, errors)
 
   def FindByBaseDir(self, base_dir):
     """
@@ -941,9 +946,8 @@ class TargetObjectBase(ConfigurableObject):
       if not multiple:
         if field is not None:
           # TODO: remove this all_result reference.
-          all_results.Error(self,
-                            "Multiple %ss specified" % command_name)
-          return
+          raise RimeConfigurationError(
+            "Multiple %ss specified" % command_name)
         setattr(self, field_name, code)
       if multiple:
         field.append(code)
@@ -997,9 +1001,9 @@ class RimeRoot(TargetObjectBase):
     # Chain-load problems.
     self.problems = []
     for name in FileUtil.ListDir(self.base_dir):
-      dir = os.path.join(self.base_dir, name)
-      if Problem.CanLoadFrom(dir):
-        problem = Problem(name, dir, self, self.options, errors)
+      path = os.path.join(self.base_dir, name)
+      if Problem.CanLoadFrom(path):
+        problem = Problem(name, path, self, self.options, errors)
         self.problems.append(problem)
     self.problems.sort(lambda a, b: cmp(a.id, b.id))
 
@@ -1077,9 +1081,9 @@ class Problem(TargetObjectBase):
     # Chain-load solutions.
     self.solutions = []
     for name in sorted(FileUtil.ListDir(self.base_dir)):
-      dir = os.path.join(self.base_dir, name)
-      if Solution.CanLoadFrom(dir):
-        solution = Solution(name, dir, self, self.options, errors)
+      path = os.path.join(self.base_dir, name)
+      if Solution.CanLoadFrom(path):
+        solution = Solution(name, path, self, self.options, errors)
         self.solutions.append(solution)
     self._SelectReferenceSolution(errors)
     # Chain-load tests.
@@ -1205,23 +1209,8 @@ class Tests(TargetObjectBase):
     """
     if self.IsBuildCached():
       return True
-    try:
-      FileUtil.RemoveTree(self.out_dir)
-    except:
-      errors.Exception(self)
+    if self._InitOutputDir(errors):
       return False
-    if not os.path.isdir(self.src_dir):
-      try:
-        FileUtil.MakeDir(self.out_dir)
-      except:
-        errors.Exception(self)
-        return False
-    else:
-      try:
-        FileUtil.CopyTree(self.src_dir, self.out_dir)
-      except:
-        errors.Exception(self)
-        return False
     if not self._CompileGenerator(errors):
       return False
     if not self._CompileValidator(errors):
@@ -1245,6 +1234,19 @@ class Tests(TargetObjectBase):
       errors.Exception(self)
       return False
     return True
+
+  def _InitOutputDir(self, errors):
+    """
+    Initialize output directory.
+    """
+    try:
+      FileUtil.RemoveTree(self.out_dir)
+      FileUtil.MakeDir(self.out_dir)
+      FileUtil.CopyTree(self.src_dir, self.out_dir)
+      return True
+    except:
+      errors.Exception(self)
+      return False
 
   def _CompileGenerator(self, errors):
     """
@@ -1502,7 +1504,7 @@ class Tests(TargetObjectBase):
       result.good = False
       result.passed = False
       result.detail = "Challenge case not found"
-      return (result, False)
+      return result
     # Try challenge cases.
     for (i, infile) in enumerate(challenge_cases):
       Console.PrintAction(
@@ -1861,13 +1863,6 @@ class Solution(TargetObjectBase):
     return self.code.Run(args=args, cwd=cwd,
                          input=input, output=output, timeout=timeout)
 
-  def Pack(self, errors):
-    """
-    Pack is not applicable for this class.
-    """
-    # TODO: use better exception.
-    raise NotImplementedError()
-
   def Clean(self, errors):
     """
     Clean this solution.
@@ -1950,13 +1945,13 @@ class Rime(object):
     Location of root directory is searched upward from cwd.
     If RIMEROOT cannot be found, return None.
     """
-    dir = cwd
-    while not RimeRoot.CanLoadFrom(dir):
-      (head, tail) = os.path.split(dir)
-      if head == dir:
+    path = cwd
+    while not RimeRoot.CanLoadFrom(path):
+      (head, tail) = os.path.split(path)
+      if head == path:
         return None
-      dir = head
-    root = RimeRoot(None, dir, None, options, errors)
+      path = head
+    root = RimeRoot(None, path, None, options, errors)
     return root
 
   def PrintHelp(self):
