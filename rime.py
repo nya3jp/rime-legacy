@@ -412,6 +412,16 @@ class ErrorRecorder(object):
 
 
 
+class RimeContext(object):
+  """
+  Context object of rime.
+  """
+
+  def __init__(self):
+    self.errors = ErrorRecorder()
+
+
+
 class SingleCaseResult(object):
   """
   Test result of a single solution versus a single test case.
@@ -814,7 +824,7 @@ class ConfigurableObject(object):
     """
     return os.path.isfile(os.path.join(base_dir, cls.CONFIG_FILE))
 
-  def __init__(self, name, base_dir, parent, errors):
+  def __init__(self, name, base_dir, parent, ctx):
     """
     Loads config file and constructs a new instance of
     configured object.
@@ -838,7 +848,7 @@ class ConfigurableObject(object):
     # Setup input/output directionaries and evaluate config.
     self.config = dict()
     self._export_dict = dict()
-    self._PreLoad(errors)
+    self._PreLoad(ctx)
     # Export functions marked with @Export.
     for name in dir(self):
       try:
@@ -857,16 +867,16 @@ class ConfigurableObject(object):
         f.close()
       except:
         pass
-    self._PostLoad(errors)
+    self._PostLoad(ctx)
 
-  def _PreLoad(self, errors):
+  def _PreLoad(self, ctx):
     """
     Called just before evaluation of config.
     Should setup symbols to export via self._export_dict.
     """
     pass
 
-  def _PostLoad(self, errors):
+  def _PostLoad(self, ctx):
     """
     Called just after evaluation of config.
     Do some post-processing of configs here.
@@ -889,9 +899,9 @@ class TargetObjectBase(ConfigurableObject):
   target objects.
   """
 
-  def __init__(self, name, base_dir, parent, options, errors):
+  def __init__(self, name, base_dir, parent, options, ctx):
     self.options = options
-    super(TargetObjectBase, self).__init__(name, base_dir, parent, errors)
+    super(TargetObjectBase, self).__init__(name, base_dir, parent, ctx)
 
   def FindByBaseDir(self, base_dir):
     """
@@ -993,18 +1003,18 @@ class RimeRoot(TargetObjectBase):
 
   CONFIG_FILE = FileNames.RIMEROOT_FILE
 
-  def _PreLoad(self, errors):
+  def _PreLoad(self, ctx):
     self.root = self
     self._export_dict["root"] = self
 
-  def _PostLoad(self, errors):
+  def _PostLoad(self, ctx):
     self.concat_test = self.config.get('CONCAT_TEST')
     # Chain-load problems.
     self.problems = []
     for name in FileUtil.ListDir(self.base_dir):
       path = os.path.join(self.base_dir, name)
       if Problem.CanLoadFrom(path):
-        problem = Problem(name, path, self, self.options, errors)
+        problem = Problem(name, path, self, self.options, ctx)
         self.problems.append(problem)
     self.problems.sort(lambda a, b: cmp(a.id, b.id))
 
@@ -1017,42 +1027,42 @@ class RimeRoot(TargetObjectBase):
         return obj
     return None
 
-  def Build(self, errors):
+  def Build(self, ctx):
     """
     Build all.
     """
     success = True
     for problem in self.problems:
-      if not problem.Build(errors):
+      if not problem.Build(ctx):
         success = False
     return success
 
-  def Test(self, errors):
+  def Test(self, ctx):
     """
     Test all.
     """
     results = []
     for problem in self.problems:
-      results.extend(problem.Test(errors))
+      results.extend(problem.Test(ctx))
     return results
 
-  def Pack(self, errors):
+  def Pack(self, ctx):
     """
     Pack all.
     """
     success = True
     for problem in self.problems:
-      if not problem.Pack(errors):
+      if not problem.Pack(ctx):
         success = False
     return success
 
-  def Clean(self, errors):
+  def Clean(self, ctx):
     """
     Clean all.
     """
     success = True
     for problem in self.problems:
-      if not problem.Clean(errors):
+      if not problem.Clean(ctx):
         success = False
     return success
 
@@ -1065,16 +1075,16 @@ class Problem(TargetObjectBase):
 
   CONFIG_FILE = FileNames.PROBLEM_FILE
 
-  def _PreLoad(self, errors):
+  def _PreLoad(self, ctx):
     self.root = self.parent
     self.out_dir = os.path.join(self.base_dir, FileNames.RIME_OUT_DIR)
     self._export_dict["problem"] = self
     self._export_dict["root"] = self.root
 
-  def _PostLoad(self, errors):
+  def _PostLoad(self, ctx):
     # Read time limit.
     if 'TIME_LIMIT' not in self.config:
-      errors.Error(self, "Time limit is not specified")
+      ctx.errors.Error(self, "Time limit is not specified")
     else:
       self.timeout = self.config['TIME_LIMIT']
     # Decide ID.
@@ -1084,18 +1094,18 @@ class Problem(TargetObjectBase):
     for name in sorted(FileUtil.ListDir(self.base_dir)):
       path = os.path.join(self.base_dir, name)
       if Solution.CanLoadFrom(path):
-        solution = Solution(name, path, self, self.options, errors)
+        solution = Solution(name, path, self, self.options, ctx)
         self.solutions.append(solution)
-    self._SelectReferenceSolution(errors)
+    self._SelectReferenceSolution(ctx)
     # Chain-load tests.
     self.tests = Tests(
       FileNames.TESTS_DIR,
       os.path.join(self.base_dir, FileNames.TESTS_DIR),
       self,
       self.options,
-      errors)
+      ctx)
 
-  def _SelectReferenceSolution(self, errors):
+  def _SelectReferenceSolution(self, ctx):
     """
     Select a reference solution.
     """
@@ -1115,7 +1125,7 @@ class Problem(TargetObjectBase):
           self.reference_solution = solution
           break
       if self.reference_solution is None:
-        errors.Error(
+        ctx.errors.Error(
           self,
           ("Reference solution \"%s\" does not exist" %
            reference_solution_name))
@@ -1129,31 +1139,31 @@ class Problem(TargetObjectBase):
         return obj
     return self.tests.FindByBaseDir(base_dir)
 
-  def Build(self, errors):
+  def Build(self, ctx):
     """
     Build all solutions and tests.
     """
     success = True
     for solution in self.solutions:
-      if not solution.Build(errors):
+      if not solution.Build(ctx):
         success = False
-    if not self.tests.Build(errors):
+    if not self.tests.Build(ctx):
       success = False
     return success
 
-  def Test(self, errors):
+  def Test(self, ctx):
     """
     Run tests.
     """
-    return self.tests.Test(errors)
+    return self.tests.Test(ctx)
 
-  def Pack(self, errors):
+  def Pack(self, ctx):
     """
     Pack tests.
     """
-    return self.tests.Pack(errors)
+    return self.tests.Pack(ctx)
 
-  def Clean(self, errors):
+  def Clean(self, ctx):
     """
     Clean all solutions and tests.
     """
@@ -1163,7 +1173,7 @@ class Problem(TargetObjectBase):
       try:
         FileUtil.RemoveTree(self.out_dir)
       except:
-        errors.Exception(self)
+        ctx.errors.Exception(self)
         success = False
     return success
 
@@ -1176,7 +1186,7 @@ class Tests(TargetObjectBase):
 
   CONFIG_FILE = FileNames.TESTS_FILE
 
-  def _PreLoad(self, errors):
+  def _PreLoad(self, ctx):
     self.problem = self.parent
     self.root = self.parent.root
     self.src_dir = self.base_dir
@@ -1193,50 +1203,50 @@ class Tests(TargetObjectBase):
     self._AddCodeRegisterer('validators', 'validator')
     self._AddCodeRegisterer('judge', 'judge')
     if not os.path.isfile(self.config_file):
-      errors.Warning(self,
-                     "%s does not exist" % self.CONFIG_FILE)
+      ctx.errors.Warning(self,
+                         "%s does not exist" % self.CONFIG_FILE)
     self._export_dict["tests"] = self
     self._export_dict["root"] = self.root
     self._export_dict["problem"] = self.problem
 
-  def _PostLoad(self, errors):
+  def _PostLoad(self, ctx):
     # TODO: print warnings if no validator / judge is specified.
     if self.judge is None:
       self.judge = DiffCode()
 
-  def Build(self, errors):
+  def Build(self, ctx):
     """
     Build tests.
     """
     if self.IsBuildCached():
       return True
-    if not self._InitOutputDir(errors):
+    if not self._InitOutputDir(ctx):
       return False
-    if not self._CompileGenerator(errors):
+    if not self._CompileGenerator(ctx):
       return False
-    if not self._CompileValidator(errors):
+    if not self._CompileValidator(ctx):
       return False
-    if not self._CompileJudge(errors):
+    if not self._CompileJudge(ctx):
       return False
-    if not self._RunGenerator(errors):
+    if not self._RunGenerator(ctx):
       return False
-    if not self._RunValidator(errors):
+    if not self._RunValidator(ctx):
       return False
     if self.ListInputFiles():
-      if not self._CompileReferenceSolution(errors):
+      if not self._CompileReferenceSolution(ctx):
         return False
-      if not self._RunReferenceSolution(errors):
+      if not self._RunReferenceSolution(ctx):
         return False
-      if not self._GenerateConcatTest(errors):
+      if not self._GenerateConcatTest(ctx):
         return False
     try:
       self.SetCacheStamp()
     except:
-      errors.Exception(self)
+      ctx.errors.Exception(self)
       return False
     return True
 
-  def _InitOutputDir(self, errors):
+  def _InitOutputDir(self, ctx):
     """
     Initialize output directory.
     """
@@ -1245,10 +1255,10 @@ class Tests(TargetObjectBase):
       FileUtil.CopyTree(self.src_dir, self.out_dir)
       return True
     except:
-      errors.Exception(self)
+      ctx.errors.Exception(self)
       return False
 
-  def _CompileGenerator(self, errors):
+  def _CompileGenerator(self, ctx):
     """
     Compile all input generators.
     """
@@ -1257,13 +1267,13 @@ class Tests(TargetObjectBase):
         Console.PrintAction("COMPILE", self, generator.src_name)
       res = generator.Compile()
       if res.status != RunResult.OK:
-        errors.Error(self,
-                     "%s: Compile Error (%s)" % (generator.src_name, res.status))
+        ctx.errors.Error(self,
+                         "%s: Compile Error (%s)" % (generator.src_name, res.status))
         Console.PrintLog(generator.ReadCompileLog())
         return False
     return True
 
-  def _RunGenerator(self, errors):
+  def _RunGenerator(self, ctx):
     """
     Run all input generators.
     """
@@ -1273,12 +1283,12 @@ class Tests(TargetObjectBase):
         args=[], cwd=self.out_dir,
         input=os.devnull, output=os.devnull, timeout=None)
       if res.status != RunResult.OK:
-        errors.Error(self,
-                     "%s: %s" % (generator.src_name, res.status))
+        ctx.errors.Error(self,
+                         "%s: %s" % (generator.src_name, res.status))
         return False
     return True
 
-  def _CompileValidator(self, errors):
+  def _CompileValidator(self, ctx):
     """
     Compile input validators.
     """
@@ -1287,19 +1297,19 @@ class Tests(TargetObjectBase):
         Console.PrintAction("COMPILE", self, validator.src_name)
       res = validator.Compile()
       if res.status != RunResult.OK:
-        errors.Error(self,
-                     "%s: Compile Error (%s)" % (validator.src_name, res.status))
+        ctx.errors.Error(self,
+                         "%s: Compile Error (%s)" % (validator.src_name, res.status))
         Console.PrintLog(validator.ReadCompileLog())
         return False
     return True
 
-  def _RunValidator(self, errors):
+  def _RunValidator(self, ctx):
     """
     Run input validators.
     """
     if not self.validators:
       Console.PrintAction("VALIDATE", self, "skipping: validator unavailable")
-      errors.Warning(self, "Validator Unavailable")
+      ctx.errors.Warning(self, "Validator Unavailable")
       return True
     for validator in self.validators:
       Console.PrintAction("VALIDATE", self, overwritable=True)
@@ -1317,20 +1327,20 @@ class Tests(TargetObjectBase):
           timeout=None,
           redirect_error=True)
         if res.status == RunResult.NG:
-          errors.Error(self,
-                       "%s: Validation Failed" % validator.src_name)
+          ctx.errors.Error(self,
+                           "%s: Validation Failed" % validator.src_name)
           log = FileUtil.ReadFile(os.path.join(self.out_dir, validationfile))
           if log:
             Console.PrintLog(log)
           return False
         elif res.status != RunResult.OK:
-          errors.Error(self,
-                       "%s: Validator Failed: %s" % (validator.src_name, res.status))
+          ctx.errors.Error(self,
+                           "%s: Validator Failed: %s" % (validator.src_name, res.status))
           return False
       Console.PrintAction("VALIDATE", self, "OK", overwriting=True)
     return True
 
-  def _CompileJudge(self, errors):
+  def _CompileJudge(self, ctx):
     """
     Compile judge.
     """
@@ -1342,28 +1352,28 @@ class Tests(TargetObjectBase):
                           self.judge.src_name)
     res = self.judge.Compile()
     if res.status != RunResult.OK:
-      errors.Error(self, "%s: Compile Error (%s)" % (self.judge.src_name, res.status))
+      ctx.errors.Error(self, "%s: Compile Error (%s)" % (self.judge.src_name, res.status))
       Console.PrintLog(self.judge.ReadCompileLog())
       return False
     return True
 
-  def _CompileReferenceSolution(self, errors):
+  def _CompileReferenceSolution(self, ctx):
     """
     Compile the reference solution.
     """
     reference_solution = self.problem.reference_solution
     if reference_solution is None:
-      errors.Error(self, "Reference solution is not available")
+      ctx.errors.Error(self, "Reference solution is not available")
       return False
-    return reference_solution.Build(errors)
+    return reference_solution.Build(ctx)
 
-  def _RunReferenceSolution(self, errors):
+  def _RunReferenceSolution(self, ctx):
     """
     Run the reference solution to generate reference outputs.
     """
     reference_solution = self.problem.reference_solution
     if reference_solution is None:
-      errors.Error(self, "Reference solution is not available")
+      ctx.errors.Error(self, "Reference solution is not available")
       return False
     Console.PrintAction("REFRUN", reference_solution, overwritable=True)
     infiles = self.ListInputFiles()
@@ -1381,14 +1391,14 @@ class Tests(TargetObjectBase):
         output=os.path.join(self.out_dir, difffile),
         timeout=None)
       if res.status != RunResult.OK:
-        errors.Error(reference_solution, res.status)
+        ctx.errors.Error(reference_solution, res.status)
         return False
     Console.PrintAction(
       "REFRUN", reference_solution,
       overwriting=True)
     return True
 
-  def _GenerateConcatTest(self, errors):
+  def _GenerateConcatTest(self, ctx):
     if not self.concat_test:
       return True
     Console.PrintAction("GENERATE", self, overwritable=True)
@@ -1425,30 +1435,30 @@ class Tests(TargetObjectBase):
       overwriting=True)
     return True
 
-  def Test(self, errors):
+  def Test(self, ctx):
     """
     Test all solutions.
     """
-    if not self.Build(errors):
+    if not self.Build(ctx):
       return []
     results = []
     for solution in self.problem.solutions:
-      results.extend(self.TestSolution(solution, errors))
+      results.extend(self.TestSolution(solution, ctx))
     return results
 
-  def TestSolution(self, solution, errors):
+  def TestSolution(self, solution, ctx):
     """
     Test a single solution.
     """
     # Note: though Tests.Test() executes Tests.Build(), it is also
     # required here because Solution.Test() calls this function directly.
-    if not self.Build(errors):
+    if not self.Build(ctx):
       result = TestResult(self.problem, solution, [])
       result.good = False
       result.passed = False
       result.detail = "Failed to build tests"
       return [result]
-    if not solution.Build(errors):
+    if not solution.Build(ctx):
       result = TestResult(self.problem, solution, [])
       result.good = False
       result.passed = False
@@ -1456,9 +1466,9 @@ class Tests(TargetObjectBase):
       return [result]
     Console.PrintAction("TEST", solution, overwritable=True)
     if not solution.IsCorrect() and solution.challenge_cases:
-      result = self._TestSolutionWithChallengeCases(solution, errors)
+      result = self._TestSolutionWithChallengeCases(solution, ctx)
     else:
-      result = self._TestSolutionWithAllCases(solution, errors)
+      result = self._TestSolutionWithAllCases(solution, ctx)
     if result.good and result.passed:
       assert not result.detail
       if result.IsTimeStatsAvailable():
@@ -1485,7 +1495,7 @@ class Tests(TargetObjectBase):
         Console.PrintLog(log)
     return [result]
 
-  def _TestSolutionWithChallengeCases(self, solution, errors):
+  def _TestSolutionWithChallengeCases(self, solution, ctx):
     """
     Test a wrong solution which has explicitly-specified challenge cases.
     """
@@ -1497,8 +1507,8 @@ class Tests(TargetObjectBase):
     all_exists = True
     for infile in challenge_cases:
       if infile not in infiles:
-        errors.Error(solution,
-                     "Challenge case not found: %s" % infile)
+        ctx.errors.Error(solution,
+                         "Challenge case not found: %s" % infile)
         all_exists = False
     if not all_exists:
       result.good = False
@@ -1512,7 +1522,7 @@ class Tests(TargetObjectBase):
         "[%d/%d] %s" % (i+1, len(challenge_cases), infile),
         overwriting=True, overwritable=True)
       (verdict, time, cached) = self._TestOneCase(
-        solution, infile, cookie, errors)
+        solution, infile, cookie, ctx)
       if cached:
         result.cached = True
       result.cases[infile].verdict = verdict
@@ -1521,14 +1531,14 @@ class Tests(TargetObjectBase):
         result.good = False
         result.passed = True
         result.detail = "%s: Unexpectedly Accepted" % infile
-        errors.Error(solution, result.detail, quiet=True)
+        ctx.errors.Error(solution, result.detail, quiet=True)
         break
       elif verdict not in (TestResult.WA, TestResult.TLE, TestResult.RE):
         result.ruling_file = infile
         result.good = False
         result.passed = False
         result.detail = "%s: Judge Error" % infile
-        errors.Error(solution, result.detail, quiet=True)
+        ctx.errors.Error(solution, result.detail, quiet=True)
         break
     if result.good is None:
       result.good = True
@@ -1536,7 +1546,7 @@ class Tests(TargetObjectBase):
       result.detail = "Expectedly Failed"
     return result
 
-  def _TestSolutionWithAllCases(self, solution, errors):
+  def _TestSolutionWithAllCases(self, solution, ctx):
     """
     Test a solution without challenge cases.
     The solution can be marked as wrong but without challenge cases.
@@ -1552,7 +1562,7 @@ class Tests(TargetObjectBase):
         overwriting=True, overwritable=True)
       ignore_timeout = (infile == FileNames.CONCAT_INFILE)
       (verdict, time, cached) = self._TestOneCase(
-        solution, infile, cookie, errors, ignore_timeout=ignore_timeout)
+        solution, infile, cookie, ctx, ignore_timeout=ignore_timeout)
       if cached:
         result.cached = True
       result.cases[infile].verdict = verdict
@@ -1561,7 +1571,7 @@ class Tests(TargetObjectBase):
         result.good = False
         result.passed = False
         result.detail = "%s: Judge Error" % infile
-        errors.Error(solution, result.detail, quiet=True)
+        ctx.errors.Error(solution, result.detail, quiet=True)
         break
       elif verdict != TestResult.AC:
         result.ruling_file = infile
@@ -1569,7 +1579,7 @@ class Tests(TargetObjectBase):
         result.detail = "%s: %s" % (infile, verdict)
         if solution.IsCorrect():
           result.good = False
-          errors.Error(solution, result.detail, quiet=True)
+          ctx.errors.Error(solution, result.detail, quiet=True)
         else:
           result.good = True
         break
@@ -1581,7 +1591,7 @@ class Tests(TargetObjectBase):
         result.detail = "Unexpectedly Passed"
     return result
 
-  def _TestOneCase(self, solution, infile, cookie, errors, ignore_timeout=False):
+  def _TestOneCase(self, solution, infile, cookie, ctx, ignore_timeout=False):
     """
     Test a solution with one case.
     Cache results if option is set.
@@ -1595,7 +1605,7 @@ class Tests(TargetObjectBase):
         try:
           (cached_cookie, result) = FileUtil.PickleLoad(cachefile)
         except:
-          errors.Exception(solution)
+          ctx.errors.Exception(solution)
           cached_cookie = None
         if cached_cookie == cookie:
           return tuple(list(result)+[True])
@@ -1603,7 +1613,7 @@ class Tests(TargetObjectBase):
     try:
       FileUtil.PickleSave((cookie, result), cachefile)
     except:
-      errors.Exception(solution)
+      ctx.errors.Exception(solution)
     return tuple(list(result)+[False])
 
   def _TestOneCaseNoCache(self, solution, infile, ignore_timeout=False):
@@ -1642,7 +1652,7 @@ class Tests(TargetObjectBase):
       return (TestResult.WA, None)
     return ("Validator " + res.status, None)
 
-  def Pack(self, errors):
+  def Pack(self, ctx):
     """
     Pack test cases.
     """
@@ -1650,7 +1660,7 @@ class Tests(TargetObjectBase):
       # TODO: do caching of packed tests output here.
       pass
     else:
-      if not self.Build(errors):
+      if not self.Build(ctx):
         return False
     infiles = self.ListInputFiles()
     Console.PrintAction("PACK", self, overwritable=True)
@@ -1658,7 +1668,7 @@ class Tests(TargetObjectBase):
       try:
         FileUtil.MakeDir(self.pack_dir)
       except:
-        errors.Exception(self)
+        ctx.errors.Exception(self)
         return False
     for (i, infile) in enumerate(infiles):
       basename = os.path.splitext(infile)[0]
@@ -1681,7 +1691,7 @@ class Tests(TargetObjectBase):
         FileUtil.CopyFile(os.path.join(self.out_dir, difffile),
                           os.path.join(self.pack_dir, packed_difffile))
       except:
-        errors.Exception(self)
+        ctx.errors.Exception(self)
         return False
     tar_args = ["tar", "czf",
                 os.path.join(os.pardir, FileNames.TESTS_PACKED_TARBALL),
@@ -1700,7 +1710,7 @@ class Tests(TargetObjectBase):
                             stdout=devnull,
                             stderr=devnull)
     except:
-      errors.Exception(self)
+      ctx.errors.Exception(self)
       return False
     finally:
       try:
@@ -1708,7 +1718,7 @@ class Tests(TargetObjectBase):
       except:
         pass
     if ret != 0:
-      errors.Error(self, "tar failed: ret = %d" % ret)
+      ctx.errors.Error(self, "tar failed: ret = %d" % ret)
       return False
     Console.PrintAction(
       "PACK",
@@ -1717,7 +1727,7 @@ class Tests(TargetObjectBase):
       overwriting=True)
     return True
 
-  def Clean(self, errors):
+  def Clean(self, ctx):
     """
     Remove test cases.
     """
@@ -1725,7 +1735,7 @@ class Tests(TargetObjectBase):
     try:
       FileUtil.RemoveTree(self.out_dir)
     except:
-      errors.Exception(self)
+      ctx.errors.Exception(self)
 
   def ListInputFiles(self, include_concat=False):
     """
@@ -1767,7 +1777,7 @@ class Solution(TargetObjectBase):
 
   CONFIG_FILE = FileNames.SOLUTION_FILE
 
-  def _PreLoad(self, errors):
+  def _PreLoad(self, ctx):
     self.problem = self.parent
     self.root = self.parent.root
     self.src_dir = self.base_dir
@@ -1779,7 +1789,7 @@ class Solution(TargetObjectBase):
     self._export_dict["root"] = self.root
     self._export_dict["problem"] = self.problem
 
-  def _PostLoad(self, errors):
+  def _PostLoad(self, ctx):
     source_exts = {
       '.c': self.c_solution,
       '.cc': self.cxx_solution,
@@ -1802,12 +1812,12 @@ class Solution(TargetObjectBase):
           src = name
           solution_func = source_exts[ext]
       if ambiguous:
-        errors.Error(self,
-                     ("Multiple source files found; " +
-                      "specify explicitly in " +
-                      self.CONFIG_FILE))
+        ctx.errors.Error(self,
+                         ("Multiple source files found; " +
+                          "specify explicitly in " +
+                          self.CONFIG_FILE))
       elif src is None:
-        errors.Error(self, "Source file not found")
+        ctx.errors.Error(self, "Source file not found")
       else:
         solution_func(src=src)
     # Decide if this solution is correct or not.
@@ -1824,7 +1834,7 @@ class Solution(TargetObjectBase):
     """
     return self.correct
 
-  def Build(self, errors):
+  def Build(self, ctx):
     """
     Build this solution.
     """
@@ -1837,24 +1847,24 @@ class Solution(TargetObjectBase):
     res = self.code.Compile()
     log = self.code.ReadCompileLog()
     if res.status != RunResult.OK:
-      errors.Error(self, "Compile Error (%s)" % res.status)
+      ctx.errors.Error(self, "Compile Error (%s)" % res.status)
       Console.PrintLog(log)
       return False
     if log:
-      errors.Warning(self, "Compiler warnings found")
+      ctx.errors.Warning(self, "Compiler warnings found")
       Console.PrintLog(log)
     try:
       self.SetCacheStamp()
     except:
-      errors.Exception(self)
+      ctx.errors.Exception(self)
       return False
     return True
 
-  def Test(self, errors):
+  def Test(self, ctx):
     """
     Test this solution.
     """
-    return self.problem.tests.TestSolution(self, errors)
+    return self.problem.tests.TestSolution(self, ctx)
 
   def Run(self, args, cwd, input, output, timeout):
     """
@@ -1863,14 +1873,14 @@ class Solution(TargetObjectBase):
     return self.code.Run(args=args, cwd=cwd,
                          input=input, output=output, timeout=timeout)
 
-  def Clean(self, errors):
+  def Clean(self, ctx):
     """
     Clean this solution.
     """
     Console.PrintAction("CLEAN", self)
     e = self.code.Clean()
     if e:
-      errors.Exception(self, e)
+      ctx.errors.Exception(self, e)
       return False
     return True
 
@@ -1894,12 +1904,12 @@ class Rime(object):
       self.PrintHelp()
       return 0
     # Try to load config files.
-    errors = ErrorRecorder()
-    root = self.LoadRoot(os.getcwd(), options, errors)
+    ctx = RimeContext()
+    root = self.LoadRoot(os.getcwd(), options, ctx)
     if not root:
       Console.PrintError("RIMEROOT not found. Make sure you are in Rime subtree.")
       return 1
-    if errors.HasError():
+    if ctx.errors.HasError():
       Console.PrintError("Encountered error on loading config files.")
       return 1
     # Decide target object.
@@ -1915,20 +1925,20 @@ class Rime(object):
       return 1
     # Call.
     if cmd == 'build':
-      success = obj.Build(errors)
+      success = obj.Build(ctx)
       Console.Print("Finished Build.")
       Console.Print()
     elif cmd == 'test':
-      results = obj.Test(errors)
+      results = obj.Test(ctx)
       Console.Print("Finished Test.")
       Console.Print()
       self.PrintTestSummary(results)
     elif cmd == 'clean':
-      success = obj.Clean(errors)
+      success = obj.Clean(ctx)
       Console.Print("Finished Clean.")
       Console.Print()
     elif cmd == 'pack':
-      success = obj.Pack(errors)
+      success = obj.Pack(ctx)
       Console.Print("Finished Pack.")
       Console.Print()
     else:
@@ -1936,10 +1946,10 @@ class Rime(object):
       return 1
     Console.Print()
     Console.Print(Console.BOLD, "Error Summary:", Console.NORMAL)
-    errors.PrintSummary()
+    ctx.errors.PrintSummary()
     return 0
 
-  def LoadRoot(self, cwd, options, errors):
+  def LoadRoot(self, cwd, options, ctx):
     """
     Load configs and return RimeRoot instance.
     Location of root directory is searched upward from cwd.
@@ -1951,7 +1961,7 @@ class Rime(object):
       if head == path:
         return None
       path = head
-    root = RimeRoot(None, path, None, options, errors)
+    root = RimeRoot(None, path, None, options, ctx)
     return root
 
   def PrintHelp(self):
