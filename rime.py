@@ -28,6 +28,7 @@ import datetime
 import optparse
 import os
 import pickle
+import re
 import shutil
 import signal
 import subprocess
@@ -1209,7 +1210,7 @@ class Tests(TargetObjectBase):
     """
     if self.IsBuildCached():
       return True
-    if self._InitOutputDir(errors):
+    if not self._InitOutputDir(errors):
       return False
     if not self._CompileGenerator(errors):
       return False
@@ -1241,7 +1242,6 @@ class Tests(TargetObjectBase):
     """
     try:
       FileUtil.RemoveTree(self.out_dir)
-      FileUtil.MakeDir(self.out_dir)
       FileUtil.CopyTree(self.src_dir, self.out_dir)
       return True
     except:
