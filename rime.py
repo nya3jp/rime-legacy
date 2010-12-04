@@ -912,11 +912,16 @@ class TargetObjectBase(ConfigurableObject):
       return self
     return None
 
-  def SetCacheStamp(self):
+  def SetCacheStamp(self, ctx):
     """
     Update stamp file.
     """
-    FileUtil.CreateEmptyFile(self.stamp_file)
+    try:
+      FileUtil.CreateEmptyFile(self.stamp_file)
+      return True
+    except:
+      ctx.errors.Exception(self)
+      return False
 
   def GetCacheStamp(self):
     """
@@ -1239,10 +1244,7 @@ class Tests(TargetObjectBase):
         return False
       if not self._GenerateConcatTest(ctx):
         return False
-    try:
-      self.SetCacheStamp()
-    except:
-      ctx.errors.Exception(self)
+    if not self.SetCacheStamp(ctx):
       return False
     return True
 
@@ -1853,10 +1855,7 @@ class Solution(TargetObjectBase):
     if log:
       ctx.errors.Warning(self, "Compiler warnings found")
       Console.PrintLog(log)
-    try:
-      self.SetCacheStamp()
-    except:
-      ctx.errors.Exception(self)
+    if not self.SetCacheStamp(ctx):
       return False
     return True
 
