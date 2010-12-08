@@ -345,6 +345,8 @@ class Console(object):
     Barely print messages.
     Used to print logs such as compiler's output.
     """
+    if log is None:
+      return
     for line in log.splitlines():
       cls.Print("> ", line)
 
@@ -1332,8 +1334,7 @@ class Tests(TargetObjectBase):
           ctx.errors.Error(self,
                            "%s: Validation Failed" % validator.src_name)
           log = FileUtil.ReadFile(os.path.join(self.out_dir, validationfile))
-          if log:
-            Console.PrintLog(log)
+          Console.PrintLog(log)
           return False
         elif res.status != RunResult.OK:
           ctx.errors.Error(self,
@@ -1493,8 +1494,7 @@ class Tests(TargetObjectBase):
       assert result.ruling_file
       judgefile = os.path.splitext(result.ruling_file)[0] + FileNames.JUDGE_EXT
       log = FileUtil.ReadFile(os.path.join(solution.out_dir, judgefile))
-      if log:
-        Console.PrintLog(log)
+      Console.PrintLog(log)
     return [result]
 
   def _TestSolutionWithChallengeCases(self, solution, ctx):
