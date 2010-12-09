@@ -62,9 +62,9 @@ def LoadRimeModule():
   rime = imp.load_source('rime', os.path.join(dir, 'rime.py'))
 
 
-def GenerateWiki(root, errors):
+def GenerateWiki(root, ctx):
   # Clean and update.
-  root.Clean(errors)
+  root.Clean(ctx)
   rime.Console.PrintAction("UPDATE", None, "svn up")
   subprocess.call(['svn', 'up'])
   # Get system information.
@@ -88,7 +88,7 @@ def GenerateWiki(root, errors):
     assignees = problem.config.get('ASSIGNEES') or ""
     if type(assignees) is list:
       assignees = ",".join(assignees)
-    results = problem.Test(errors)
+    results = problem.Test(ctx)
     num_tests = len(problem.tests.ListInputFiles())
     correct_solution_results = [result for result in results if result.solution.IsCorrect()]
     num_corrects = len(correct_solution_results)
@@ -150,15 +150,15 @@ def UploadWiki(root, wiki):
 def main():
   # Initialize Rime object.
   LoadRimeModule()
-  errors = rime.ErrorRecorder()
+  ctx = rime.RimeContext()
   arime = rime.Rime()
   options = arime.GetDefaultOptions()
-  root = arime.LoadRoot(os.getcwd(), options, errors)
+  root = arime.LoadRoot(os.getcwd(), options, ctx)
   if not root:
-    errors.PrintSummary()
+    ctx.errors.PrintSummary()
     return
   os.chdir(root.base_dir)
-  wiki = GenerateWiki(root, errors)
+  wiki = GenerateWiki(root, ctx)
   UploadWiki(root, wiki)
 
 
