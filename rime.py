@@ -419,7 +419,8 @@ class RimeContext(object):
   Context object of rime.
   """
 
-  def __init__(self):
+  def __init__(self, options):
+    self.options = options
     self.errors = ErrorRecorder()
 
 
@@ -901,8 +902,7 @@ class TargetObjectBase(ConfigurableObject):
   target objects.
   """
 
-  def __init__(self, name, base_dir, parent, options, ctx):
-    self.options = options
+  def __init__(self, name, base_dir, parent, ctx):
     super(TargetObjectBase, self).__init__(name, base_dir, parent, ctx)
 
   def FindByBaseDir(self, base_dir):
@@ -1021,7 +1021,7 @@ class RimeRoot(TargetObjectBase):
     for name in FileUtil.ListDir(self.base_dir):
       path = os.path.join(self.base_dir, name)
       if Problem.CanLoadFrom(path):
-        problem = Problem(name, path, self, self.options, ctx)
+        problem = Problem(name, path, self, ctx)
         self.problems.append(problem)
     self.problems.sort(lambda a, b: cmp(a.id, b.id))
 
@@ -1101,7 +1101,7 @@ class Problem(TargetObjectBase):
     for name in sorted(FileUtil.ListDir(self.base_dir)):
       path = os.path.join(self.base_dir, name)
       if Solution.CanLoadFrom(path):
-        solution = Solution(name, path, self, self.options, ctx)
+        solution = Solution(name, path, self, ctx)
         self.solutions.append(solution)
     self._SelectReferenceSolution(ctx)
     # Chain-load tests.
@@ -1109,7 +1109,6 @@ class Problem(TargetObjectBase):
       FileNames.TESTS_DIR,
       os.path.join(self.base_dir, FileNames.TESTS_DIR),
       self,
-      self.options,
       ctx)
 
   def _SelectReferenceSolution(self, ctx):
@@ -1602,7 +1601,7 @@ class Tests(TargetObjectBase):
     cachefile = os.path.join(
       solution.out_dir,
       os.path.splitext(infile)[0] + FileNames.CACHE_EXT)
-    if self.options.cache_tests:
+    if ctx.options.cache_tests:
       if cookie is not None and os.path.isfile(cachefile):
         try:
           (cached_cookie, result) = FileUtil.PickleLoad(cachefile)
@@ -1903,8 +1902,8 @@ class Rime(object):
       self.PrintHelp()
       return 0
     # Try to load config files.
-    ctx = RimeContext()
-    root = self.LoadRoot(os.getcwd(), options, ctx)
+    ctx = RimeContext(options)
+    root = self.LoadRoot(os.getcwd(), ctx)
     if not root:
       Console.PrintError("RIMEROOT not found. Make sure you are in Rime subtree.")
       return 1
@@ -1948,7 +1947,7 @@ class Rime(object):
     ctx.errors.PrintSummary()
     return 0
 
-  def LoadRoot(self, cwd, options, ctx):
+  def LoadRoot(self, cwd, ctx):
     """
     Load configs and return RimeRoot instance.
     Location of root directory is searched upward from cwd.
@@ -1960,7 +1959,7 @@ class Rime(object):
       if head == path:
         return None
       path = head
-    root = RimeRoot(None, path, None, options, ctx)
+    root = RimeRoot(None, path, None, ctx)
     return root
 
   def PrintHelp(self):
