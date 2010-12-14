@@ -150,10 +150,10 @@ def UploadWiki(root, wiki):
 def main():
   # Initialize Rime object.
   LoadRimeModule()
-  ctx = rime.RimeContext()
   arime = rime.Rime()
   options = arime.GetDefaultOptions()
-  root = arime.LoadRoot(os.getcwd(), options, ctx)
+  ctx = rime.RimeContext(options)
+  root = arime.LoadRoot(os.getcwd(), ctx)
   if not root:
     ctx.errors.PrintSummary()
     return
