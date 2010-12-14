@@ -745,15 +745,7 @@ class ScriptCode(FileBasedCode):
                         os.path.join(self.out_dir, self.src_name))
       return RunResult(RunResult.OK, 0.0)
     except Exception, e:
-      try:
-        f = open(os.path.join(self.out_dir, self.log_name), 'w')
-        print >>f, str(e)
-        f.close()
-      except:
-        try:
-          f.close();
-        except:
-          pass
+      FileUtil.WriteFile(str(e), os.path.join(self.out_dir, self.log_name))
       return RunResult(RunResult.RE, None)
 
 
@@ -860,16 +852,10 @@ class ConfigurableObject(object):
       except:
         pass
     # Evaluate config.
-    try:
-      f = open(real_config_file, 'rb')
-      script = f.read()
-      code = compile(script, self.config_file, 'exec')
-      exec(code, self._export_dict, self.config)
-    finally:
-      try:
-        f.close()
-      except:
-        pass
+    script = FileUtil.ReadFile(real_config_file)
+    code = compile(script, self.config_file, 'exec')
+    # TODO: exception handling here
+    exec(code, self._export_dict, self.config)
     self._PostLoad(ctx)
 
   def _PreLoad(self, ctx):
