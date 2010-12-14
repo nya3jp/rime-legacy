@@ -232,7 +232,7 @@ class Console(object):
   KILL = ''
 
   # State for overwriting.
-  last_overwritable = False
+  last_progress = False
 
   @classmethod
   def Init(cls):
@@ -277,14 +277,13 @@ class Console(object):
     Print one line.
     Each argument is either ordinal string or control code.
     """
-    overwritable = bool(kwargs.get('overwritable'))
-    overwriting = bool(kwargs.get('overwriting'))
+    progress = bool(kwargs.get('progress'))
     msg = "".join(args)
-    if overwriting and cls.last_overwritable and cls.cap.overwrite:
+    if cls.last_progress and cls.cap.overwrite:
       print cls.UP + "\r" + msg + cls.KILL
     else:
       print msg
-    cls.last_overwritable = overwritable
+    cls.last_progress = progress
 
   @classmethod
   def PrintAction(cls, action, obj, *args, **kwargs):
@@ -1250,13 +1249,13 @@ class Tests(TargetObjectBase):
       ctx.errors.Warning(self, "Validator Unavailable")
       return True
     for validator in self.validators:
-      Console.PrintAction("VALIDATE", self, overwritable=True)
+      Console.PrintAction("VALIDATE", self, progress=True)
       infiles = self.ListInputFiles()
       for (i, infile) in enumerate(infiles):
         Console.PrintAction(
           "VALIDATE", self,
           "[%d/%d] %s" % (i+1, len(infiles), infile),
-          overwriting=True, overwritable=True)
+          progress=True)
         validationfile = os.path.splitext(infile)[0] + FileNames.VALIDATION_EXT
         res = validator.Run(
           args=[], cwd=self.out_dir,
@@ -1274,7 +1273,7 @@ class Tests(TargetObjectBase):
           ctx.errors.Error(self,
                            "%s: Validator Failed: %s" % (validator.src_name, res.status))
           return False
-      Console.PrintAction("VALIDATE", self, "OK", overwriting=True)
+      Console.PrintAction("VALIDATE", self, "OK")
     return True
 
   def _CompileJudge(self, ctx):
@@ -1312,7 +1311,7 @@ class Tests(TargetObjectBase):
     if reference_solution is None:
       ctx.errors.Error(self, "Reference solution is not available")
       return False
-    Console.PrintAction("REFRUN", reference_solution, overwritable=True)
+    Console.PrintAction("REFRUN", reference_solution, progress=True)
     infiles = self.ListInputFiles()
     for (i, infile) in enumerate(infiles):
       difffile = os.path.splitext(infile)[0] + FileNames.DIFF_EXT
@@ -1321,7 +1320,7 @@ class Tests(TargetObjectBase):
       Console.PrintAction(
         "REFRUN", reference_solution,
         "[%d/%d] %s" % (i+1, len(infiles), infile),
-        overwriting=True, overwritable=True)
+        progress=True)
       res = reference_solution.Run(
         args=[], cwd=self.out_dir,
         input=os.path.join(self.out_dir, infile),
@@ -1331,14 +1330,13 @@ class Tests(TargetObjectBase):
         ctx.errors.Error(reference_solution, res.status)
         return False
     Console.PrintAction(
-      "REFRUN", reference_solution,
-      overwriting=True)
+      "REFRUN", reference_solution)
     return True
 
   def _GenerateConcatTest(self, ctx):
     if not self.concat_test:
       return True
-    Console.PrintAction("GENERATE", self, overwritable=True)
+    Console.PrintAction("GENERATE", self, progress=True)
     concat_infile = FileNames.CONCAT_INFILE
     concat_difffile = FileNames.CONCAT_DIFFFILE
     FileUtil.CreateEmptyFile(os.path.join(self.out_dir, concat_infile))
@@ -1353,7 +1351,7 @@ class Tests(TargetObjectBase):
         "GENERATE", self,
         "[%d/%d] %s / %s" % (i+1, len(infiles),
                              concat_infile, concat_difffile),
-        overwriting=True, overwritable=True)
+        progress=True)
       in_content = FileUtil.ReadFile(infile)
       diff_content = FileUtil.ReadFile(difffile)
       if i > 0:
@@ -1368,8 +1366,7 @@ class Tests(TargetObjectBase):
         os.path.getsize(os.path.join(self.out_dir, concat_infile)),
         concat_difffile,
         os.path.getsize(os.path.join(self.out_dir, concat_difffile)),
-        ),
-      overwriting=True)
+        ))
     return True
 
   def Test(self, ctx):
@@ -1401,7 +1398,7 @@ class Tests(TargetObjectBase):
       result.passed = False
       result.detail = "Compile Error"
       return [result]
-    Console.PrintAction("TEST", solution, overwritable=True)
+    Console.PrintAction("TEST", solution, progress=True)
     if not solution.IsCorrect() and solution.challenge_cases:
       result = self._TestSolutionWithChallengeCases(solution, ctx)
     else:
@@ -1423,7 +1420,7 @@ class Tests(TargetObjectBase):
       result.detail]
     if result.cached:
       status_row += [" ", "(cached)"]
-    Console.PrintAction("TEST", solution, overwriting=True, *status_row)
+    Console.PrintAction("TEST", solution, *status_row)
     if solution.IsCorrect() and not result.good:
       assert result.ruling_file
       judgefile = os.path.splitext(result.ruling_file)[0] + FileNames.JUDGE_EXT
@@ -1456,7 +1453,7 @@ class Tests(TargetObjectBase):
       Console.PrintAction(
         "TEST", solution,
         "[%d/%d] %s" % (i+1, len(challenge_cases), infile),
-        overwriting=True, overwritable=True)
+        progress=True)
       (verdict, time, cached) = self._TestOneCase(
         solution, infile, cookie, ctx)
       if cached:
@@ -1495,7 +1492,7 @@ class Tests(TargetObjectBase):
       Console.PrintAction(
         "TEST", solution,
         "[%d/%d] %s" % (i+1, len(infiles), infile),
-        overwriting=True, overwritable=True)
+        progress=True)
       ignore_timeout = (infile == FileNames.CONCAT_INFILE)
       (verdict, time, cached) = self._TestOneCase(
         solution, infile, cookie, ctx, ignore_timeout=ignore_timeout)
@@ -1599,7 +1596,7 @@ class Tests(TargetObjectBase):
       if not self.Build(ctx):
         return False
     infiles = self.ListInputFiles()
-    Console.PrintAction("PACK", self, overwritable=True)
+    Console.PrintAction("PACK", self, progress=True)
     if not os.path.isdir(self.pack_dir):
       try:
         FileUtil.MakeDir(self.pack_dir)
@@ -1616,14 +1613,14 @@ class Tests(TargetObjectBase):
           "PACK",
           self,
           "%s -> %s" % (infile, packed_infile),
-          overwriting=True, overwritable=True)
+          progress=True)
         FileUtil.CopyFile(os.path.join(self.out_dir, infile),
                           os.path.join(self.pack_dir, packed_infile))
         Console.PrintAction(
           "PACK",
           self,
           "%s -> %s" % (difffile, packed_difffile),
-          overwriting=True, overwritable=True)
+          progress=True)
         FileUtil.CopyFile(os.path.join(self.out_dir, difffile),
                           os.path.join(self.pack_dir, packed_difffile))
       except:
@@ -1636,7 +1633,7 @@ class Tests(TargetObjectBase):
       "PACK",
       self,
       " ".join(tar_args),
-      overwriting=True, overwritable=True)
+      progress=True)
     ret = -1
     try:
       devnull = FileUtil.OpenNull()
@@ -1654,8 +1651,7 @@ class Tests(TargetObjectBase):
     Console.PrintAction(
       "PACK",
       self,
-      FileNames.TESTS_PACKED_TARBALL,
-      overwriting=True)
+      FileNames.TESTS_PACKED_TARBALL)
     return True
 
   def Clean(self, ctx):
