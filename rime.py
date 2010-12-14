@@ -125,7 +125,15 @@ class FileUtil(object):
 
   @classmethod
   def GetModified(cls, file):
-    return os.path.getmtime(file)
+    try:
+      return datetime.datetime.fromtimestamp(os.path.getmtime(file))
+    except:
+      return datetime.datetime.min
+
+  @classmethod
+  def GetLastModifiedUnder(cls, dir):
+    return max(*[cls.GetModified(os.path.join(dir, name))
+                 for name in cls.ListDir(dir, True)])
 
   @classmethod
   def CreateEmptyFile(cls, file):
@@ -770,12 +778,10 @@ class DiffCode(Code):
     return True
 
 
-
 class ConfigurableObject(object):
   """
   Base class for configurable, i.e., associated with directory-config
   pair under Rime's management, classes.
-  
   """
 
   # Class-specific config file name.
@@ -789,14 +795,17 @@ class ConfigurableObject(object):
     """
     return os.path.isfile(os.path.join(base_dir, cls.CONFIG_FILE))
 
-  def __init__(self, name, base_dir, parent, ctx):
+  def __init__(self, name, base_dir, parent):
     """
-    Loads config file and constructs a new instance of
-    configured object.
+    Constructs a new unconfigured object.
     """
     self.name = name
     self.base_dir = base_dir
     self.parent = parent
+    if parent is None:
+      self.root = self
+    else:
+      self.root = parent.root
     # Set full name.
     # Full name is normally path-like string separated with "/".
     if name is None:
@@ -807,12 +816,21 @@ class ConfigurableObject(object):
       self.fullname = parent.fullname + "/" + name
     # Locate config file.
     self.config_file = os.path.join(base_dir, self.CONFIG_FILE)
-    real_config_file = self.config_file
-    if not os.path.isfile(real_config_file):
-      real_config_file = os.devnull
+    self.real_config_file = self.config_file
+    if not os.path.isfile(self.real_config_file):
+      self.real_config_file = os.devnull
+    self._loaded = False
+
+  def Load(self, ctx):
+    """
+    Loads configurations and do setups.
+    """
+    assert not self._loaded
+    self._loaded = True
     # Setup input/output directionaries and evaluate config.
     self.config = dict()
     self._export_dict = dict()
+    self._dependencies = []
     self._PreLoad(ctx)
     # Export functions marked with @Export.
     for name in dir(self):
@@ -822,7 +840,7 @@ class ConfigurableObject(object):
       except:
         pass
     # Evaluate config.
-    script = FileUtil.ReadFile(real_config_file)
+    script = FileUtil.ReadFile(self.real_config_file)
     code = compile(script, self.config_file, 'exec')
     # TODO: exception handling here
     exec(code, self._export_dict, self.config)
@@ -842,6 +860,33 @@ class ConfigurableObject(object):
     """
     pass
 
+  def FindByBaseDir(self, base_dir):
+    """
+    Search whole subtree under this object and
+    return the object with matching base_dir.
+    Subclasses may want to override this for recursive search.
+    """
+    if self.base_dir == base_dir:
+      return self
+    return None
+
+  def GetLastModified(self):
+    """
+    Get timestamp of this target.
+    """
+    stamp = FileUtil.GetLastModifiedUnder(self.src_dir)
+    for d in self._dependencies:
+      stamp = max(stamp, d.GetLastModified())
+    return stamp
+
+  def _AddDependency(self, obj):
+    """
+    Add a dependency of this target to another target.
+    This is used for deciding last modified stamp.
+    """
+    assert issubclass(obj.__class__, ConfigurableObject)
+    self._dependencies.append(obj)
+
   @classmethod
   def Export(cls, name):
     """
@@ -852,23 +897,16 @@ class ConfigurableObject(object):
     return ExportImpl
 
 
-class TargetObjectBase(ConfigurableObject):
+class BuildableObject(ConfigurableObject):
   """
-  ConfigurableObject with some utility methods for
-  target objects.
+  ConfigurableObject with its dedicated output directory.
   """
 
-  def __init__(self, name, base_dir, parent, ctx):
-    super(TargetObjectBase, self).__init__(name, base_dir, parent, ctx)
-
-  def FindByBaseDir(self, base_dir):
-    """
-    Search whole subtree under this object and
-    return the object with matching base_dir.
-    """
-    if self.base_dir == base_dir:
-      return self
-    return None
+  def __init__(self, name, base_dir, out_dir, parent):
+    super(BuildableObject, self).__init__(name, base_dir, parent)
+    self.src_dir = base_dir
+    self.out_dir = out_dir
+    self.stamp_file = os.path.join(self.out_dir, FileNames.STAMP_FILE)
 
   def SetCacheStamp(self, ctx):
     """
@@ -884,10 +922,8 @@ class TargetObjectBase(ConfigurableObject):
   def GetCacheStamp(self):
     """
     Get timestamp of stamp file.
-    Returns None if not available.
+    Returns minimum datetime if not available.
     """
-    if not os.path.isfile(self.stamp_file):
-      return None
     return FileUtil.GetModified(self.stamp_file)
 
   def IsBuildCached(self):
@@ -895,20 +931,8 @@ class TargetObjectBase(ConfigurableObject):
     Check if cached build is not staled.
     """
     stamp_mtime = self.GetCacheStamp()
-    if stamp_mtime is None:
-      return False
-    if not os.path.isfile(self.config_file):
-      config_mtime = datetime.datetime.min
-    else:
-      config_mtime = FileUtil.GetModified(self.config_file)
-    cache_mtime = max(stamp_mtime, config_mtime)
-    if not os.path.isdir(self.src_dir):
-      return False
-    for name in ['.'] + FileUtil.ListDir(self.src_dir, True):
-      if (FileUtil.GetModified(os.path.join(self.src_dir, name)) >
-          cache_mtime):
-        return False
-    return True
+    src_mtime = self.GetLastModified()
+    return (src_mtime < stamp_mtime)
 
   def _AddCodeRegisterer(self, field_name, command_name):
     """
@@ -959,7 +983,7 @@ class TargetObjectBase(ConfigurableObject):
 
 
 
-class RimeRoot(TargetObjectBase):
+class RimeRoot(ConfigurableObject):
   """
   Represent the root of Rime tree.
   """
@@ -967,7 +991,6 @@ class RimeRoot(TargetObjectBase):
   CONFIG_FILE = FileNames.RIMEROOT_FILE
 
   def _PreLoad(self, ctx):
-    self.root = self
     self._export_dict["root"] = self
 
   def _PostLoad(self, ctx):
@@ -977,7 +1000,8 @@ class RimeRoot(TargetObjectBase):
     for name in FileUtil.ListDir(self.base_dir):
       path = os.path.join(self.base_dir, name)
       if Problem.CanLoadFrom(path):
-        problem = Problem(name, path, self, ctx)
+        problem = Problem(name, path, self)
+        problem.Load(ctx)
         self.problems.append(problem)
     self.problems.sort(lambda a, b: cmp(a.id, b.id))
 
@@ -1031,16 +1055,18 @@ class RimeRoot(TargetObjectBase):
 
 
 
-class Problem(TargetObjectBase):
+class Problem(BuildableObject):
   """
   Represent a single problem.
   """
 
   CONFIG_FILE = FileNames.PROBLEM_FILE
 
+  def __init__(self, name, base_dir, parent):
+    super(Problem, self).__init__(
+      name, base_dir, os.path.join(base_dir, FileNames.RIME_OUT_DIR), parent)
+
   def _PreLoad(self, ctx):
-    self.root = self.parent
-    self.out_dir = os.path.join(self.base_dir, FileNames.RIME_OUT_DIR)
     self._export_dict["problem"] = self
     self._export_dict["root"] = self.root
 
@@ -1057,15 +1083,16 @@ class Problem(TargetObjectBase):
     for name in sorted(FileUtil.ListDir(self.base_dir)):
       path = os.path.join(self.base_dir, name)
       if Solution.CanLoadFrom(path):
-        solution = Solution(name, path, self, ctx)
+        solution = Solution(name, path, self)
+        solution.Load(ctx)
         self.solutions.append(solution)
     self._SelectReferenceSolution(ctx)
     # Chain-load tests.
     self.tests = Tests(
       FileNames.TESTS_DIR,
       os.path.join(self.base_dir, FileNames.TESTS_DIR),
-      self,
-      ctx)
+      self)
+    self.tests.Load(ctx)
 
   def _SelectReferenceSolution(self, ctx):
     """
@@ -1141,22 +1168,22 @@ class Problem(TargetObjectBase):
 
 
 
-class Tests(TargetObjectBase):
+class Tests(BuildableObject):
   """
   Represent a test set for a problem.
   """
 
   CONFIG_FILE = FileNames.TESTS_FILE
 
-  def _PreLoad(self, ctx):
-    self.problem = self.parent
-    self.root = self.parent.root
-    self.src_dir = self.base_dir
-    self.out_dir = os.path.join(self.problem.out_dir, FileNames.TESTS_DIR)
+  def __init__(self, name, base_dir, parent):
+    super(Tests, self).__init__(
+      name, base_dir, os.path.join(parent.out_dir, FileNames.TESTS_DIR), parent)
+    self.problem = parent
     self.pack_dir = os.path.join(self.problem.out_dir, FileNames.TESTS_PACKED_DIR)
-    self.stamp_file = os.path.join(self.out_dir, FileNames.STAMP_FILE)
     self.separator_file = os.path.join(self.out_dir, FileNames.SEPARATOR_FILE)
     self.terminator_file = os.path.join(self.out_dir, FileNames.TERMINATOR_FILE)
+
+  def _PreLoad(self, ctx):
     self.concat_test = self.root.concat_test
     self.generators = []
     self.validators = []
@@ -1175,6 +1202,8 @@ class Tests(TargetObjectBase):
     # TODO: print warnings if no validator / judge is specified.
     if self.judge is None:
       self.judge = DiffCode()
+    if self.problem.reference_solution:
+      self._AddDependency(self.problem.reference_solution)
 
   def Build(self, ctx):
     """
@@ -1719,19 +1748,19 @@ class Tests(TargetObjectBase):
 
 
 
-class Solution(TargetObjectBase):
+class Solution(BuildableObject):
   """
   Represents a single solution.
   """
 
   CONFIG_FILE = FileNames.SOLUTION_FILE
 
+  def __init__(self, name, base_dir, parent):
+    super(Solution, self).__init__(
+      name, base_dir, os.path.join(parent.out_dir, name), parent)
+    self.problem = parent
+
   def _PreLoad(self, ctx):
-    self.problem = self.parent
-    self.root = self.parent.root
-    self.src_dir = self.base_dir
-    self.out_dir = os.path.join(self.problem.out_dir, self.name)
-    self.stamp_file = os.path.join(self.out_dir, FileNames.STAMP_FILE)
     self.code = None
     self._AddCodeRegisterer('code', 'solution')
     self._export_dict["solution"] = self
@@ -1907,7 +1936,8 @@ class Rime(object):
       if head == path:
         return None
       path = head
-    root = RimeRoot(None, path, None, ctx)
+    root = RimeRoot(None, path, None)
+    root.Load(ctx)
     return root
 
   def PrintHelp(self):
