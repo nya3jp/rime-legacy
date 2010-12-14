@@ -108,7 +108,15 @@ class FileUtil(object):
 
   @classmethod
   def CopyTree(cls, src, dst):
-    shutil.copytree(src, dst)
+    cls.MakeDir(dst)
+    files = cls.ListDir(src, True)
+    for f in files:
+      srcpath = os.path.join(src, f)
+      dstpath = os.path.join(dst, f)
+      if os.path.isdir(srcpath):
+        cls.MakeDir(dstpath)
+      else:
+        cls.CopyFile(srcpath, dstpath)
 
   @classmethod
   def RemoveTree(cls, dir):
@@ -124,12 +132,12 @@ class FileUtil(object):
     open(file, 'w').close()
 
   @classmethod
-  def ListDir(cls, dir, recurse=False):
+  def ListDir(cls, dir, recursive=False):
     files = []
     try:
       files = filter(lambda x: not x.startswith("."),
                      os.listdir(dir))
-      if recurse:
+      if recursive:
         for subfile in files[:]:
           subdir = os.path.join(dir, subfile)
           if os.path.isdir(subdir):
