@@ -37,6 +37,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 
 
 HELP_MESSAGE = """\
@@ -51,6 +52,7 @@ Commands:
 Options:
   -h, --help         show this help message and exit
   -C, --cache-tests  cache test results
+  -d, --debug        print debug messages
 """
 
 
@@ -334,35 +336,42 @@ class ErrorRecorder(object):
   Accumurates errors/warnings and print summary of them.
   """
 
-  def __init__(self):
+  def __init__(self, ctx):
+    self.ctx = ctx
     self.errors = []
     self.warnings = []
 
-  def Error(self, source, reason, quiet=False):
+  def Error(self, source, reason, quiet=False, stack_offset=0):
     """
     Emit an error.
     If quiet is True it is not printed immediately, but shown in summary.
     """
     if source:
-      self.errors.append("%s: %s" % (source.fullname, reason))
+      msg = "%s: %s" % (source.fullname, reason)
     else:
-      self.errors.append(reason)
+      msg = reason
+    if self.ctx.options.debug >= 1:
+      msg += " [" + self._FormatStack(stack_offset) + "]"
+    self.errors.append(msg)
     if not quiet:
-      Console.PrintError(reason)
+      Console.PrintError(msg)
 
-  def Warning(self, source, reason, quiet=False):
+  def Warning(self, source, reason, quiet=False, stack_offset=0):
     """
     Emit an warning.
     If quiet is True it is not printed immediately, but shown in summary.
     """
     if source:
-      self.warnings.append("%s: %s" % (source.fullname, reason))
+      msg = "%s: %s" % (source.fullname, reason)
     else:
-      self.warnings.append(reason)
+      msg = reason
+    if self.ctx.options.debug >= 1:
+      msg += " [" + self._FormatStack(stack_offset) + "]"
+    self.errors.append(msg)
     if not quiet:
-      Console.PrintWarning(reason)
+      Console.PrintWarning(msg)
 
-  def Exception(self, source, e=None, quiet=False):
+  def Exception(self, source, e=None, quiet=False, stack_offset=0):
     """
     Emit an exception without aborting.
     If e is not given, use current context.
@@ -370,7 +379,12 @@ class ErrorRecorder(object):
     """
     if e is None:
       e = sys.exc_info()[1]
-    self.Error(source, str(e), quiet)
+    self.Error(source, str(e), quiet=quiet, stack_offset=stack_offset+1)
+
+  def _FormatStack(self, stack_offset):
+    stack = traceback.extract_stack()
+    (filename, lineno, modulename, code) = stack[-3-stack_offset]
+    return 'File "%s", line %d, in %s' % (filename, lineno, modulename)
 
   def HasError(self):
     return bool(self.errors)
@@ -395,7 +409,7 @@ class RimeContext(object):
 
   def __init__(self, options):
     self.options = options
-    self.errors = ErrorRecorder()
+    self.errors = ErrorRecorder(self)
 
 
 
@@ -1954,6 +1968,8 @@ class Rime(object):
                       default=False, action="store_true")
     parser.add_option('-C', '--cache-tests', dest='cache_tests',
                       default=False, action="store_true")
+    parser.add_option('-d', '--debug', dest='debug',
+                      default=0, action="count")
     return parser
 
   def GetDefaultOptions(self):
