@@ -383,7 +383,7 @@ class ErrorRecorder(object):
       msg = reason
     if self.ctx.options.debug >= 1:
       msg += " [" + self._FormatStack(stack_offset) + "]"
-    self.errors.append(msg)
+    self.warnings.append(msg)
     if not quiet:
       Console.PrintWarning(msg)
 
