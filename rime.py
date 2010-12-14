@@ -24,6 +24,8 @@
 # Author: Shuhei Takahashi
 #
 
+from __future__ import with_statement
+
 import datetime
 import optparse
 import os
@@ -137,32 +139,14 @@ class FileUtil(object):
 
   @classmethod
   def PickleSave(cls, obj, file):
-    try:
-      f = None
-      f = open(file, 'w')
+    with open(file, 'w') as f:
       pickle.dump(obj, f)
-    except:
-      if f is not None:
-        try:
-          f.close()
-        except:
-          pass
-      raise
 
   @classmethod
   def PickleLoad(cls, file):
-    try:
-      f = None
-      f = open(file, 'r')
+    with open(file, 'r') as f:
       obj = pickle.load(f)
       return obj
-    except:
-      if f is not None:
-        try:
-          f.close()
-        except:
-          pass
-      raise
 
   @classmethod
   def ConvPath(cls, path):
@@ -190,45 +174,36 @@ class FileUtil(object):
     return None
 
   @classmethod
+  def OpenNull(cls):
+    if not hasattr(cls, '_devnull'):
+      cls._devnull = open(os.devnull, 'w')
+    return cls._devnull
+
+  @classmethod
   def ReadFile(cls, name):
     try:
-      f = open(name)
-      return f.read()
+      with open(name, 'r') as f:
+        return f.read()
     except:
       return None
-    finally:
-      try:
-        f.close()
-      except:
-        pass
 
   @classmethod
   def WriteFile(cls, content, name):
     try:
-      f = open(name, 'w')
-      f.write(content)
+      with open(name, 'w') as f:
+        f.write(content)
       return True
     except:
       return False
-    finally:
-      try:
-        f.close()
-      except:
-        pass
 
   @classmethod
   def AppendFile(cls, content, name):
     try:
-      f = open(name, 'a')
-      f.write(content)
-      return True
+      with open(name, 'a') as f:
+        f.write(content)
+        return True
     except:
       return False
-    finally:
-      try:
-        f.close()
-      except:
-        pass
 
 
 class Console(object):
@@ -621,41 +596,24 @@ class FileBasedCode(Code):
       return e
 
   def _ExecForCompile(self, args):
-    try:
-      devnull = open(os.devnull, 'w')
-      outfile = open(os.path.join(self.out_dir, self.log_name), 'w')
+    with open(os.path.join(self.out_dir, self.log_name), 'w') as outfile:
       return self._ExecInternal(
         args=args, cwd=self.src_dir,
-        stdin=devnull, stdout=outfile, stderr=subprocess.STDOUT)
-    finally:
-      try:
-        devnull.close()
-        outfile.close()
-      except:
-        pass
+        stdin=FileUtil.OpenNull(), stdout=outfile, stderr=subprocess.STDOUT)
 
   def ReadCompileLog(self):
     return FileUtil.ReadFile(os.path.join(self.out_dir, self.log_name))
 
   def _ExecForRun(self, args, cwd, input, output, timeout, redirect_error):
-    try:
-      devnull = open(os.devnull, 'w')
-      infile = open(input, 'r')
-      outfile = open(output, 'w')
-      if redirect_error:
-        errfile = subprocess.STDOUT
-      else:
-        errfile = devnull
-      return self._ExecInternal(
-        args=args, cwd=cwd,
-        stdin=infile, stdout=outfile, stderr=errfile, timeout=timeout)
-    finally:
-      try:
-        devnull.close()
-        infile.close()
-        outfile.close()
-      except:
-        pass
+    with open(input, 'r') as infile:
+      with open(output, 'w') as outfile:
+        if redirect_error:
+          errfile = subprocess.STDOUT
+        else:
+          errfile = FileUtil.OpenNull()
+        return self._ExecInternal(
+          args=args, cwd=cwd,
+          stdin=infile, stdout=outfile, stderr=errfile, timeout=timeout)
 
   def _ExecInternal(self, args, cwd, stdin, stdout, stderr, timeout=None):
     start_time = time.time()
@@ -770,31 +728,22 @@ class DiffCode(Code):
     parser.add_option('-o', '--outfile', dest='outfile')
     (options, pos_args) = parser.parse_args([''] + args)
     run_args = ['diff', '-u', options.difffile, options.outfile]
-    try:
-      devnull = open(os.devnull, 'w')
-      infile = open(input, 'r')
-      outfile = open(output, 'w')
-      if redirect_error:
-        errfile = subprocess.STDOUT
-      else:
-        errfile = devnull
-      try:
-        ret = subprocess.call(run_args, cwd=cwd,
-                              stdin=infile, stdout=outfile, stderr=errfile)
-      except OSError:
+    with open(input, 'r') as infile:
+      with open(output, 'w') as outfile:
+        if redirect_error:
+          errfile = subprocess.STDOUT
+        else:
+          errfile = FileUtil.OpenNull()
+        try:
+          ret = subprocess.call(run_args, cwd=cwd,
+                                stdin=infile, stdout=outfile, stderr=errfile)
+        except OSError:
+          return RunResult(RunResult.RE, None)
+        if ret == 0:
+          return RunResult(RunResult.OK, 0.0)
+        if ret > 0:
+          return RunResult(RunResult.NG, None)
         return RunResult(RunResult.RE, None)
-    finally:
-      try:
-        devnull.close()
-        infile.close()
-        outfile.close()
-      except:
-        pass
-    if ret == 0:
-      return RunResult(RunResult.OK, 0.0)
-    if ret > 0:
-      return RunResult(RunResult.NG, None)
-    return RunResult(RunResult.RE, None)
 
   def Clean(self):
     return True
@@ -1690,7 +1639,7 @@ class Tests(TargetObjectBase):
       overwriting=True, overwritable=True)
     ret = -1
     try:
-      devnull = open(os.devnull, 'w')
+      devnull = FileUtil.OpenNull()
       ret = subprocess.call(tar_args,
                             cwd=self.pack_dir,
                             stdin=devnull,
@@ -1699,11 +1648,6 @@ class Tests(TargetObjectBase):
     except:
       ctx.errors.Exception(self)
       return False
-    finally:
-      try:
-        devnull.close()
-      except:
-        pass
     if ret != 0:
       ctx.errors.Error(self, "tar failed: ret = %d" % ret)
       return False
