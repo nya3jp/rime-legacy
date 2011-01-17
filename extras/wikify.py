@@ -109,7 +109,7 @@ def GenerateWiki(root, ctx):
     if num_bads == 0 and num_tests >= 10 and num_corrects >= 2:
       cell_output = CELL_GOOD
     # Validator:
-    if problem.tests.validator is not None:
+    if not problem.tests.validators:
       cell_validator = CELL_GOOD
     # Judge:
     if need_custom_judge:
