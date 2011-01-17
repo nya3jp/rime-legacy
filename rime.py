@@ -1003,7 +1003,7 @@ class RimeRoot(ConfigurableObject):
         problem = Problem(name, path, self)
         problem.Load(ctx)
         self.problems.append(problem)
-    self.problems.sort(lambda a, b: cmp(a.id, b.id))
+    self.problems.sort(lambda a, b: cmp((a.id, a.name), (b.id,name)))
 
   def FindByBaseDir(self, base_dir):
     if self.base_dir == base_dir:
