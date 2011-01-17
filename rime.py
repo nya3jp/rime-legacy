@@ -132,8 +132,8 @@ class FileUtil(object):
 
   @classmethod
   def GetLastModifiedUnder(cls, dir):
-    return max(*[cls.GetModified(os.path.join(dir, name))
-                 for name in cls.ListDir(dir, True)])
+    return max([cls.GetModified(os.path.join(dir, name))
+               for name in (cls.ListDir(dir, True) + [dir])])
 
   @classmethod
   def CreateEmptyFile(cls, file):
