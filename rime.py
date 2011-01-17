@@ -1316,13 +1316,13 @@ class Tests(BuildableObject):
           redirect_error=True)
         if res.status == RunResult.NG:
           ctx.errors.Error(self,
-                           "%s: Validation Failed" % validator.src_name)
+                           "%s: Validation Failed" % infile)
           log = FileUtil.ReadFile(os.path.join(self.out_dir, validationfile))
           Console.PrintLog(log)
           return False
         elif res.status != RunResult.OK:
           ctx.errors.Error(self,
-                           "%s: Validator Failed: %s" % (validator.src_name, res.status))
+                           "%s: Validator Failed: %s" % (infile, res.status))
           return False
       Console.PrintAction("VALIDATE", self, "OK")
     return True
