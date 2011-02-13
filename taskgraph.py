@@ -29,6 +29,7 @@ import logging
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 
@@ -72,7 +73,6 @@ class Task(object):
 class GeneratorTask(Task):
 
   def __init__(self, it, key):
-    assert inspect.isgenerator(it)
     self.it = it
     self.key = key
 
@@ -88,9 +88,9 @@ class GeneratorTask(Task):
     except StopIteration:
       return TaskReturn(None)
 
-  def Throw(self, exception):
+  def Throw(self, type, value=None, traceback=None):
     try:
-      return self.it.throw(exception)
+      return self.it.throw(type, value, traceback)
     except StopIteration:
       return TaskReturn(None)
 
@@ -214,7 +214,7 @@ class TaskPool(object):
     elif isinstance(value, Bailout):
       return value.value
     else:
-      raise value
+      raise value[0], value[1], value[2]
 
   def _RunNextTask(self):
     while len(self.ready_tasks) == 0:
@@ -225,7 +225,7 @@ class TaskPool(object):
     if next_task is None:
       return False
     assert next_task not in self.task_counters
-    exception = None
+    exc_info = None
     if next_task in self.task_graph:
       if isinstance(self.task_graph[next_task], list):
         value = []
@@ -235,21 +235,21 @@ class TaskPool(object):
             if success:
               value.append(cached)
             else:
-              exception = cached
+              exc_info = cached
       else:
         success, cached = self.cache[self.task_graph[next_task]]
         if success:
           value = cached
         else:
-          exception = cached
+          exc_info = cached
       del self.task_graph[next_task]
     else:
       value = None
-    if exception is not None:
-      if isinstance(exception, Bailout):
-        self._ContinueTask(next_task, exception.value)
+    if exc_info is not None:
+      if isinstance(exc_info[1], Bailout):
+        self._ContinueTask(next_task, exc_info[1].value)
       else:
-        self._ThrowTask(next_task, exception)
+        self._ThrowTask(next_task, exc_info)
     else:
       self._ContinueTask(next_task, value)
     return True
@@ -262,19 +262,19 @@ class TaskPool(object):
     self._BeginTask(subtask, task)
     return True
 
-  def _ThrowTask(self, task, exception):
+  def _ThrowTask(self, task, exc_info):
     assert not task.IsExclusive() or len(self.blocked_tasks) == 0
     assert task not in self.task_graph
     assert task not in self.task_counters
     assert task not in self.cache
     try:
       logging.debug('_ThrowTask: %s: entering' % task)
-      result = task.Throw(exception)
+      result = task.Throw(*exc_info)
       logging.debug('_ThrowTask: %s: exited' % task)
       self._ProcessTaskResult(task, result)
-    except Exception, e:
-      logging.debug('_ThrowTask: %s: exception raised')
-      self._ProcessTaskException(task, e)
+    except:
+      logging.debug('_ThrowTask: %s: exception raised' % task)
+      self._ProcessTaskException(task, sys.exc_info())
 
   def _ContinueTask(self, task, value):
     assert not task.IsExclusive() or len(self.blocked_tasks) == 0
@@ -286,9 +286,9 @@ class TaskPool(object):
       result = task.Continue(value)
       logging.debug('_ContinueTask: %s: exited' % task)
       self._ProcessTaskResult(task, result)
-    except Exception, e:
-      logging.debug('_ContinueTask: %s: exception raised')
-      self._ProcessTaskException(task, e)
+    except:
+      logging.debug('_ContinueTask: %s: exception raised' % task)
+      self._ProcessTaskException(task, sys.exc_info())
 
   def _ProcessTaskResult(self, task, result):
     if isinstance(result, Task):
@@ -355,8 +355,13 @@ class TaskPool(object):
     assert task not in self.cache
     try:
       task.Close()
-    except Exception, e:
-      self._ProcessTaskException(e)
+    except RuntimeError:
+      # Python2.5 raises RuntimeError when GeneratorExit is ignored. This often
+      # happens when yielding a return value from inside of try block, or even
+      # Ctrl+C was pressed when in try block.
+      pass
+    except:
+      self._ProcessTaskException(task, sys.exc_info())
       return
     self.cache[task] = (True, value)
     logging.debug('_FinishTask: %s: finished, returned: %s' % (task, value))
@@ -365,11 +370,11 @@ class TaskPool(object):
         self._ResolveTask(wait_task)
       del self.task_waits[task]
 
-  def _ProcessTaskException(self, task, e):
+  def _ProcessTaskException(self, task, exc_info):
     assert task not in self.cache
-    self.cache[task] = (False, e)
+    self.cache[task] = (False, exc_info)
     logging.debug('_FinishTask: %s: exception raised: %s' %
-                  (task, type(e).__name__))
+                  (task, exc_info[0].__name__))
     if task in self.task_waits:
       for wait_task in self.task_waits[task]:
         self._BailoutTask(wait_task)

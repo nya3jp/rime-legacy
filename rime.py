@@ -2107,6 +2107,11 @@ class Rime(object):
       if result.cached:
         status_row += [" ", "(cached)"]
       Console.Print(*status_row)
+    if not (ctx.options.precise or ctx.options.parallelism == 1):
+      Console.Print("Note: Timings are not displayed when "
+                    "concurrent processing is enabled.")
+      Console.Print("      To show them, try -p (--precise) or "
+                    "remove -j (--parallelism).")
 
   def GetOptionParser(self):
     """
