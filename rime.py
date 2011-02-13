@@ -2014,29 +2014,34 @@ class Rime(object):
     if not obj:
       Console.PrintError("Target directory is not managed by Rime.")
       return 1
-    # Create TaskPool with specified parallelism.
-    pool = taskgraph.TaskPool(parallelism=ctx.options.parallelism)
-    # Call.
-    if cmd == 'build':
-      success = pool.Run(obj.Build(ctx))
-      Console.Print("Finished Build.")
-      Console.Print()
-    elif cmd == 'test':
-      results = pool.Run(obj.Test(ctx))
-      Console.Print("Finished Test.")
-      Console.Print()
-      self.PrintTestSummary(results, ctx)
-    elif cmd == 'clean':
-      success = pool.Run(obj.Clean(ctx))
-      Console.Print("Finished Clean.")
-      Console.Print()
-    elif cmd == 'pack':
-      success = pool.Run(obj.Pack(ctx))
-      Console.Print("Finished Pack.")
-      Console.Print()
+    # Create TaskGraph with specified parallelism and run a task.
+    if options.parallelism == 1:
+      graph = taskgraph.SerialTaskGraph()
     else:
-      Console.PrintError("Unknown command: %s" % cmd)
-      return 1
+      graph = taskgraph.FiberTaskGraph(parallelism=ctx.options.parallelism)
+    try:
+      if cmd == 'build':
+        success = graph.Run(obj.Build(ctx))
+        Console.Print("Finished Build.")
+        Console.Print()
+      elif cmd == 'test':
+        results = graph.Run(obj.Test(ctx))
+        Console.Print("Finished Test.")
+        Console.Print()
+        self.PrintTestSummary(results, ctx)
+      elif cmd == 'clean':
+        success = graph.Run(obj.Clean(ctx))
+        Console.Print("Finished Clean.")
+        Console.Print()
+      elif cmd == 'pack':
+        success = graph.Run(obj.Pack(ctx))
+        Console.Print("Finished Pack.")
+        Console.Print()
+      else:
+        Console.PrintError("Unknown command: %s" % cmd)
+        return 1
+    finally:
+      graph.Close()
     Console.Print()
     Console.Print(Console.BOLD, "Error Summary:", Console.NORMAL)
     ctx.errors.PrintSummary()
