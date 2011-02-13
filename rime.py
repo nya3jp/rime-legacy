@@ -32,6 +32,7 @@ import logging
 import optparse
 import os
 import pickle
+import platform
 import re
 import shutil
 import signal
@@ -1987,8 +1988,11 @@ class Rime(object):
     if cmd is None or options.show_help:
       self.PrintHelp()
       return 0
-    # Try to load config files.
     ctx = RimeContext(options)
+    # Check system.
+    if not self._CheckSystem(ctx):
+      return 1
+    # Try to load config files.
     root = self.LoadRoot(os.getcwd(), ctx)
     if not root:
       Console.PrintError("RIMEROOT not found. Make sure you are in Rime subtree.")
@@ -2149,6 +2153,14 @@ class Rime(object):
       params = []
     return (cmd, params, options)
 
+  def _CheckSystem(self, ctx):
+    """
+    Check the sytem environment.
+    """
+    system = platform.system()
+    if system in ('Windows', 'Microsoft') or system.startswith('CYGWIN'):
+      Console.Print("Note: Running Rime under Windows will be unstable.")
+    return True
 
 
 def main():
