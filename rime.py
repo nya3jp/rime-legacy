@@ -27,6 +27,10 @@
 from __future__ import with_statement
 
 import datetime
+import functools
+import inspect
+import itertools
+import logging
 import optparse
 import os
 import pickle
@@ -51,11 +55,631 @@ Commands:
   help      show this help message and exit
 
 Options:
-  -h, --help         show this help message and exit
-  -C, --cache-tests  cache test results
-  -d, --debug        print debug messages
+  -h, --help             show this help message and exit
+  -j, --parallelism=num  run processes in parallel
+  -p, --precise          don't run timing tasks concurrently
+  -C, --cache-tests      cache test results
+  -d, --debug            print debug messages
 """
 
+
+## TaskGraph
+
+# State of tasks.
+RUNNING, WAITING, BLOCKED, READY, FINISHED, ABORTED = range(6)
+
+
+class TaskBranch(object):
+
+  def __init__(self, tasks):
+    self.tasks = tasks
+
+
+class TaskReturn(object):
+
+  def __init__(self, value):
+    self.value = value
+
+
+class TaskBlock(object):
+
+  pass
+
+
+class _TaskRaise(object):
+  """
+  Internal only; do not return an instance of this class from generators.
+  """
+
+  def __init__(self, type, value=None, traceback=None):
+    self.exc_info = (type, value, traceback)
+
+
+class Bailout(Exception):
+
+  def __init__(self, value=None):
+    self.value = value
+
+
+class Task(object):
+
+  def __hash__(self):
+    if self.CacheKey() is None:
+      return id(self)
+    return hash(self.CacheKey())
+
+  def __eq__(self, other):
+    if not isinstance(other, Task):
+      return False
+    if self.CacheKey() is None and other.CacheKey() is None:
+      return id(self) == id(other)
+    return self.CacheKey() == other.CacheKey()
+
+  def IsExclusive(self):
+    return False
+
+  def IsCacheable(self):
+    return self.CacheKey() is not None
+
+  def CacheKey(self):
+    raise NotImplementedError()
+
+  def Continue(self, value=None):
+    raise NotImplementedError()
+
+  def Throw(self, exception):
+    raise NotImplementedError()
+
+  def Poll(self):
+    raise NotImplementedError()
+
+  def Wait(self):
+    raise NotImplementedError()
+
+  def Close(self):
+    pass
+
+
+class GeneratorTask(Task):
+
+  def __init__(self, it, key):
+    self.it = it
+    self.key = key
+
+  def __repr__(self):
+    return repr(self.key)
+
+  def CacheKey(self):
+    return self.key
+
+  def Continue(self, value=None):
+    try:
+      return self.it.send(value)
+    except StopIteration:
+      return TaskReturn(None)
+
+  def Throw(self, type, value=None, traceback=None):
+    try:
+      return self.it.throw(type, value, traceback)
+    except StopIteration:
+      return TaskReturn(None)
+
+  def Close(self):
+    self.it.close()
+
+  @staticmethod
+  def FromFunction(func):
+    @functools.wraps(func)
+    def MakeTask(*args, **kwargs):
+      key = GeneratorTask._MakeCacheKey(func, args, kwargs)
+      try:
+        hash(key)
+      except TypeError:
+        raise ValueError(
+          'Unhashable argument was passed to GeneratorTask function')
+      it = func(*args, **kwargs)
+      return GeneratorTask(it, key)
+    return MakeTask
+
+  @staticmethod
+  def _MakeCacheKey(func, args, kwargs):
+    return ('GeneratorTask', func, tuple(args), tuple(kwargs.items()))
+
+
+class ExternalProcessTask(Task):
+
+  def __init__(self, *args, **kwargs):
+    self.args = args
+    self.kwargs = kwargs
+    self.proc = None
+    if 'timeout' in kwargs:
+      self.timeout = kwargs['timeout']
+      del kwargs['timeout']
+    else:
+      self.timeout = None
+    if 'exclusive' in kwargs:
+      self.exclusive = kwargs['exclusive']
+      del kwargs['exclusive']
+    else:
+      self.exclusive = False
+
+  def CacheKey(self):
+    # Never cache.
+    return None
+
+  def IsExclusive(self):
+    return self.exclusive
+
+  def Continue(self, value=None):
+    if self.exclusive:
+      return self._ContinueExclusive()
+    else:
+      return self._ContinueNonExclusive()
+
+  def _ContinueExclusive(self):
+    assert self.proc is None
+    self._StartProcess()
+    self.proc.wait()
+    return TaskReturn(self._EndProcess())
+
+  def _ContinueNonExclusive(self):
+    if self.proc is None:
+      self._StartProcess()
+      return TaskBlock()
+    elif not self.Poll():
+      return TaskBlock()
+    else:
+      return TaskReturn(self._EndProcess())
+
+  def Poll(self):
+    assert self.proc is not None
+    return self.proc.poll() is not None
+
+  def Wait(self):
+    assert self.proc is not None
+    self.proc.wait()
+
+  def _StartProcess(self):
+    self.start_time = time.time()
+    self.proc = subprocess.Popen(*self.args, **self.kwargs)
+    if self.timeout is not None:
+      def TimeoutKiller():
+        try:
+          os.kill(self.proc.pid, signal.SIGKILL)
+        except:
+          pass
+      self.timer = threading.Timer(self.timeout, TimeoutKiller)
+      self.timer.start()
+    else:
+      self.timer = None
+
+  def _EndProcess(self):
+    self.end_time = time.time()
+    self.time = self.end_time - self.start_time
+    if self.timer is not None:
+      self.timer.cancel()
+      self.timer = None
+    # Don't keep proc in cache.
+    proc = self.proc
+    self.proc = None
+    return proc
+
+
+class SerialTaskGraph(object):
+  """
+  TaskGraph which emulates normal serialized execution.
+  """
+
+  def __init__(self):
+    self.cache = dict()
+
+  def Close(self):
+    pass
+
+  def Run(self, task):
+    if task not in self.cache:
+      self.cache[task] = None
+      value = (True, None)
+      while True:
+        try:
+          if value[0]:
+            result = task.Continue(value[1])
+          elif isinstance(value[1][1], Bailout):
+            result = task.Continue(value[1].value)
+          else:
+            result = task.Throw(*value[1])
+        except StopIteration:
+          result = TaskReturn(None)
+        except:
+          result = _TaskRaise(*sys.exc_info())
+        if isinstance(result, TaskBranch):
+          try:
+            value = (True, [self.Run(subtask) for subtask in result.tasks])
+          except:
+            value = (False, sys.exc_info())
+        elif isinstance(result, Task):
+          try:
+            value = (True, self.Run(result))
+          except:
+            value = (False, sys.exc_info())
+        elif isinstance(result, TaskBlock):
+          value = (True, None)
+          try:
+            task.Wait()
+          except:
+            self.cache[task] = (False, sys.exc_info())
+            break
+        elif isinstance(result, _TaskRaise):
+          self.cache[task] = (False, result.exc_info)
+          break
+        elif isinstance(result, TaskReturn):
+          self.cache[task] = (True, result.value)
+          break
+        else:
+          self.cache[task] = (True, result)
+          break
+      try:
+        task.Close()
+      except RuntimeError:
+        pass
+      except:
+        self.cache[task] = (False, sys.exc_info())
+    if self.cache[task] is None:
+      raise RuntimeException('Cyclic task dependency found')
+    success, value = self.cache[task]
+    if success:
+      return value
+    elif isinstance(value[1], Bailout):
+      return value[1].value
+    else:
+      raise value[0], value[1], value[2]
+
+
+class FiberTaskGraph(object):
+  """
+  TaskGraph which executes tasks with fibers (microthreads).
+
+  FiberTaskGraph allows some tasks to be in blocked state in the same time.
+  Branched tasks are executed in arbitrary order.
+  """
+
+  def __init__(self, parallelism):
+    self.parallelism = parallelism
+    self.cache = dict()
+    self.task_graph = dict()
+    self.task_counters = dict()
+    self.task_waits = dict()
+    self.task_state = dict()
+    self.ready_tasks = []
+    self.blocked_tasks = []
+    self.pending_stack = []
+
+  def Close(self):
+    pass
+
+  def Run(self, init_task):
+    self._BranchTask(None, [init_task])
+    while self._RunNextTask():
+      pass
+    assert self.task_state[None] == READY
+    del self.task_state[None]
+    del self.task_graph[None]
+    success, value = self.cache[init_task]
+    if success:
+      return value
+    elif isinstance(value, Bailout):
+      return value.value
+    else:
+      raise value[0], value[1], value[2]
+
+  def _RunNextTask(self):
+    while len(self.ready_tasks) == 0:
+      if not self._VisitBranch():
+        self._WaitBlockedTasks()
+    next_task = self.ready_tasks.pop(0)
+    self._LogTaskStats()
+    if next_task is None:
+      return False
+    assert self.task_state[next_task] == READY
+    exc_info = None
+    if next_task in self.task_graph:
+      if isinstance(self.task_graph[next_task], list):
+        value = []
+        for task in self.task_graph[next_task]:
+          if task in self.cache:
+            success, cached = self.cache[task]
+            if success:
+              value.append(cached)
+            else:
+              exc_info = cached
+      else:
+        success, cached = self.cache[self.task_graph[next_task]]
+        if success:
+          value = cached
+        else:
+          exc_info = cached
+      del self.task_graph[next_task]
+    else:
+      value = None
+    self._SetTaskState(next_task, RUNNING)
+    if exc_info is not None:
+      if isinstance(exc_info[1], Bailout):
+        self._ContinueTask(next_task, exc_info[1].value)
+      else:
+        self._ThrowTask(next_task, exc_info)
+    else:
+      self._ContinueTask(next_task, value)
+    return True
+
+  def _VisitBranch(self):
+    if not self.pending_stack:
+      return False
+    # Visit branches by depth first.
+    task, subtask = self.pending_stack.pop()
+    self._BeginTask(subtask, task)
+    return True
+
+  def _ContinueTask(self, task, value):
+    assert self.task_state[task] == RUNNING
+    assert not task.IsExclusive() or len(self.blocked_tasks) == 0
+    logging.debug('_ContinueTask: %s: entering' % task)
+    try:
+      result = task.Continue(value)
+    except:
+      result = _TaskRaise(*sys.exc_info())
+    logging.debug('_ContinueTask: %s: exited' % task)
+    self._ProcessTaskResult(task, result)
+
+  def _ThrowTask(self, task, exc_info):
+    assert self.task_state[task] == RUNNING
+    assert not task.IsExclusive() or len(self.blocked_tasks) == 0
+    logging.debug('_ThrowTask: %s: entering' % task)
+    try:
+      result = task.Throw(*exc_info)
+    except:
+      result = _TaskRaise(*sys.exc_info())
+    logging.debug('_ThrowTask: %s: exited' % task)
+    self._ProcessTaskResult(task, result)
+
+  def _ProcessTaskResult(self, task, result):
+    assert self.task_state[task] == RUNNING
+    if isinstance(result, Task):
+      logging.debug('_ProcessTaskResult: %s: received Task' % task)
+      self._BranchTask(task, result)
+    elif isinstance(result, TaskBranch):
+      logging.debug('_ProcessTaskResult: %s: received TaskBranch '
+                    'with %d tasks' % (task, len(result.tasks)))
+      self._BranchTask(task, list(result.tasks))
+    elif isinstance(result, TaskReturn):
+      logging.debug('_ProcessTaskResult: %s: received TaskReturn' % task)
+      self._FinishTask(task, result.value)
+    elif isinstance(result, TaskBlock):
+      logging.debug('_ProcessTaskResult: %s: received TaskBlock' % task)
+      self._BlockTask(task)
+    elif isinstance(result, _TaskRaise):
+      logging.debug('_ProcessTaskResult: %s: received exception' % task)
+      self._ExceptTask(task, result.exc_info)
+    else:
+      logging.debug('_ProcessTaskResult: %s: received unknown type,'
+                    'implying TaskReturn' % task)
+      self._FinishTask(task, result)
+
+  def _BranchTask(self, task, subtasks):
+    assert task is None or self.task_state[task] == RUNNING
+    self.task_graph[task] = subtasks
+    if not isinstance(subtasks, list):
+      assert isinstance(subtasks, Task)
+      subtasks = [subtasks]
+    if len(subtasks) == 0:
+      logging.debug('_BranchTask: %s: zero branch, fast return' % task)
+      self.ready_tasks.insert(0, task)
+      self._SetTaskState(task, READY)
+      self._LogTaskStats()
+      return
+    self.task_counters[task] = len(subtasks)
+    # The branches are half-expanded, but don't complete the operation here
+    # so that too many branches are opened.
+    for subtask in reversed(subtasks):
+      self.pending_stack.append((task, subtask))
+    self._SetTaskState(task, WAITING)
+
+  def _BeginTask(self, task, parent_task):
+    if task in self.cache:
+      assert self.task_state[task] in (FINISHED, ABORTED)
+      logging.debug('_BeginTask: %s: cache hit' % task)
+      success = self.cache[task][0]
+      if success:
+        self._ResolveTask(parent_task)
+      else:
+        self._BailoutTask(parent_task)
+    elif parent_task not in self.task_counters:
+      # Some sibling task already bailed out. Skip this task.
+      logging.debug('_BeginTask: %s: sibling task bailed out' % task)
+      return
+    else:
+      if task in self.task_waits:
+        assert self.task_state[task] in (WAITING, BLOCKED)
+        logging.debug('_BeginTask: %s: running' % task)
+        self.task_waits[task].append(parent_task)
+      else:
+        assert task not in self.task_state
+        logging.debug('_BeginTask: %s: starting' % task)
+        self.task_waits[task] = [parent_task]
+        self._SetTaskState(task, RUNNING)
+        if task.IsExclusive():
+          self._WaitBlockedTasksUntilEmpty()
+        self._ContinueTask(task, None)
+
+  def _FinishTask(self, task, value):
+    assert self.task_state[task] == RUNNING
+    try:
+      task.Close()
+    except RuntimeError:
+      # Python2.5 raises RuntimeError when GeneratorExit is ignored. This often
+      # happens when yielding a return value from inside of try block, or even
+      # Ctrl+C was pressed when in try block.
+      pass
+    except:
+      self._ExceptTask(task, sys.exc_info())
+      return
+    self.cache[task] = (True, value)
+    logging.debug('_FinishTask: %s: finished, returned: %s' % (task, value))
+    for wait_task in self.task_waits[task]:
+      self._ResolveTask(wait_task)
+    del self.task_waits[task]
+    self._SetTaskState(task, FINISHED)
+
+  def _ExceptTask(self, task, exc_info):
+    assert self.task_state[task] in (RUNNING, BLOCKED)
+    assert task not in self.cache
+    self.cache[task] = (False, exc_info)
+    logging.debug('_ExceptTask: %s: exception raised: %s' %
+                  (task, exc_info[0].__name__))
+    for wait_task in self.task_waits[task]:
+      self._BailoutTask(wait_task)
+    del self.task_waits[task]
+    if self.task_state[task] == BLOCKED:
+      del self.task_counters[task]
+    self._SetTaskState(task, ABORTED)
+
+  def _BlockTask(self, task):
+    assert self.task_state[task] == RUNNING
+    assert len(self.blocked_tasks) < self.parallelism
+    self.task_counters[task] = 1
+    self.blocked_tasks.insert(0, task)
+    self._SetTaskState(task, BLOCKED)
+    self._LogTaskStats()
+    logging.debug('_BlockTask: %s: pushed to blocked_tasks' % task)
+    self._WaitBlockedTasksUntilNotFull()
+    assert len(self.blocked_tasks) < self.parallelism
+
+  def _WaitBlockedTasksUntilEmpty(self):
+    logging.debug('_WaitBlockedTasksUntilEmpty: %d blocked tasks' %
+                  len(self.blocked_tasks))
+    while len(self.blocked_tasks) > 0:
+      self._WaitBlockedTasks()
+
+  def _WaitBlockedTasksUntilNotFull(self):
+    logging.debug('_WaitBlockedTasksUntilNotFull: %d blocked tasks' %
+                  len(self.blocked_tasks))
+    if len(self.blocked_tasks) == self.parallelism:
+      logging.info('Maximum parallelism reached, waiting for blocked tasks')
+      self._WaitBlockedTasks()
+
+  def _WaitBlockedTasks(self):
+    assert len(self.blocked_tasks) > 0
+    self._LogTaskStats()
+    logging.debug('_WaitBlockedTasks: waiting')
+    while True:
+      resolved = self._PollBlockedTasks()
+      if resolved > 0:
+        break
+      self._Sleep()
+    logging.debug('_WaitBlockedTasks: resolved %d blocked tasks' % resolved)
+
+  def _PollBlockedTasks(self):
+    i = 0
+    resolved = 0
+    while i < len(self.blocked_tasks):
+      task = self.blocked_tasks[i]
+      assert self.task_state[task] == BLOCKED
+      try:
+        success = task.Poll()
+      except:
+        self._ExceptTask(task, sys.exc_info())
+        resolved += 1
+        self.blocked_tasks.pop(i)
+        self._LogTaskStats()
+      else:
+        if success:
+          self._ResolveTask(task)
+          resolved += 1
+          self.blocked_tasks.pop(i)
+          self._LogTaskStats()
+        else:
+          i += 1
+    return resolved
+
+  def _ResolveTask(self, task):
+    if task not in self.task_counters:
+      logging.debug('_ResolveTask: %s: resolved, but already bailed out' % task)
+      return
+    assert self.task_state[task] in (WAITING, BLOCKED)
+    logging.debug('_ResolveTask: %s: resolved, counter: %d -> %d' %
+                  (task, self.task_counters[task], self.task_counters[task]-1))
+    self.task_counters[task] -= 1
+    if self.task_counters[task] == 0:
+      if task in self.task_graph and isinstance(self.task_graph[task], list):
+        # Multiple branches.
+        self.ready_tasks.append(task)
+      else:
+        # Serial execution or blocked task.
+        self.ready_tasks.insert(0, task)
+      del self.task_counters[task]
+      self._SetTaskState(task, READY)
+      logging.debug('_ResolveTask: %s: pushed to ready_task' % task)
+      self._LogTaskStats()
+
+  def _BailoutTask(self, task):
+    if task not in self.task_counters:
+      logging.debug('_BailoutTask: %s: multiple bail out' % task)
+      return
+    assert self.task_state[task] in (WAITING, BLOCKED)
+    logging.debug('_BailoutTask: %s: bailing out' % task)
+    if task in self.task_graph and isinstance(self.task_graph[task], list):
+      # Multiple branches.
+      self.ready_tasks.append(task)
+    else:
+      # Serial execution or blocked task.
+      self.ready_tasks.insert(0, task)
+    del self.task_counters[task]
+    self._SetTaskState(task, READY)
+    logging.debug('_BailoutTask: %s: pushed to ready_task' % task)
+
+  def _Sleep(self):
+    time.sleep(0.01)
+
+  def _LogTaskStats(self):
+    logging.info('Task statistics: %d ready, %d blocked, %d opened, %d pending' %
+                 (len(self.ready_tasks), len(self.blocked_tasks),
+                  len(self.task_waits), len(self.task_counters)))
+
+  def _SetTaskState(self, task, state):
+    if state == RUNNING:
+      assert task not in self.cache
+      assert task not in self.task_graph
+      assert task not in self.task_counters
+      assert task is None or task in self.task_waits
+    elif state == WAITING:
+      assert task not in self.cache
+      assert task in self.task_graph
+      assert task in self.task_counters
+      assert task is None or task in self.task_waits
+    elif state == BLOCKED:
+      assert task not in self.cache
+      assert task not in self.task_graph
+      assert self.task_counters.get(task) == 1
+      assert task in self.task_waits
+    elif state == READY:
+      assert task not in self.cache
+      assert task not in self.task_counters
+      assert task is None or task in self.task_waits
+    elif state == FINISHED:
+      assert task in self.cache and self.cache[task][0]
+      assert task not in self.task_graph
+      assert task not in self.task_counters
+      assert task not in self.task_waits
+    elif state == ABORTED:
+      assert task in self.cache and not self.cache[task][0]
+      assert task not in self.task_graph
+      assert task not in self.task_counters
+      assert task not in self.task_waits
+    else:
+      raise AssertionError('Unknown state: ' + str(state))
+    self.task_state[task] = state
+
+
+## Rime objects
 
 class RimeConfigurationError(Exception):
   pass
@@ -473,11 +1097,13 @@ class TestResult(object):
     self.ruling_file = None
     self.cached = False
 
-  def IsTimeStatsAvailable(self):
+  def IsTimeStatsAvailable(self, ctx):
     """
     Checks if time statistics are available.
     """
-    return (self.files and all([c.verdict == TestResult.AC for c in self.cases.values()]))
+    return ((ctx.options.precise or ctx.options.parallelism == 1) and
+            self.files and
+            all([c.verdict == TestResult.AC for c in self.cases.values()]))
 
   def GetTimeStats(self):
     """
@@ -555,7 +1181,7 @@ class Code(object):
   def Compile(self):
     raise NotImplementedError()
 
-  def Run(self, args, cwd, input, output, timeout, redirect_error=False):
+  def Run(self, args, cwd, input, output, timeout, precise, redirect_error=False):
     raise NotImplementedError()
 
   def Clean(self):
@@ -589,6 +1215,7 @@ class FileBasedCode(Code):
     """
     FileUtil.MakeDir(self.out_dir)
 
+  @GeneratorTask.FromFunction
   def Compile(self):
     """
     Compile the code and return (RunResult, log) pair.
@@ -596,24 +1223,28 @@ class FileBasedCode(Code):
     try:
       for name in self.prereqs:
         if not FileUtil.LocateBinary(name):
-          return RunResult("%s: %s" % (RunResult.PM, name), None)
+          yield RunResult("%s: %s" % (RunResult.PM, name), None)
       self.MakeOutDir()
-      return self._ExecForCompile(args=self.compile_args)
+      result = yield self._ExecForCompile(args=self.compile_args)
     except Exception, e:
-      return RunResult(str(e), None)
+      result = RunResult(str(e), None)
+    yield result
 
-  def Run(self, args, cwd, input, output, timeout, redirect_error=False):
+  @GeneratorTask.FromFunction
+  def Run(self, args, cwd, input, output, timeout, precise, redirect_error=False):
     """
     Run the code and return RunResult.
     """
     try:
-      return self._ExecForRun(
+      result = yield self._ExecForRun(
         args=self.run_args+args, cwd=cwd,
-        input=input, output=output, timeout=timeout,
+        input=input, output=output, timeout=timeout, precise=precise,
         redirect_error=redirect_error)
     except Exception, e:
-      return RunResult(str(e), None)
+      result = RunResult(str(e), None)
+    yield result
 
+  @GeneratorTask.FromFunction
   def Clean(self):
     """
     Clean the output directory.
@@ -621,42 +1252,50 @@ class FileBasedCode(Code):
     """
     try:
       FileUtil.RemoveTree(self.out_dir)
-      return None
     except Exception, e:
-      return e
-
-  def _ExecForCompile(self, args):
-    with open(os.path.join(self.out_dir, self.log_name), 'w') as outfile:
-      return self._ExecInternal(
-        args=args, cwd=self.src_dir,
-        stdin=FileUtil.OpenNull(), stdout=outfile, stderr=subprocess.STDOUT)
+      yield e
+    else:
+      yield None
 
   def ReadCompileLog(self):
     return FileUtil.ReadFile(os.path.join(self.out_dir, self.log_name))
 
-  def _ExecForRun(self, args, cwd, input, output, timeout, redirect_error):
+  @GeneratorTask.FromFunction
+  def _ExecForCompile(self, args):
+    with open(os.path.join(self.out_dir, self.log_name), 'w') as outfile:
+      yield (yield self._ExecInternal(
+          args=args, cwd=self.src_dir,
+          stdin=FileUtil.OpenNull(), stdout=outfile, stderr=subprocess.STDOUT))
+
+  @GeneratorTask.FromFunction
+  def _ExecForRun(self, args, cwd, input, output, timeout, precise,
+                  redirect_error=False):
     with open(input, 'r') as infile:
       with open(output, 'w') as outfile:
         if redirect_error:
           errfile = subprocess.STDOUT
         else:
           errfile = FileUtil.OpenNull()
-        return self._ExecInternal(
-          args=args, cwd=cwd,
-          stdin=infile, stdout=outfile, stderr=errfile, timeout=timeout)
+        yield (yield self._ExecInternal(
+            args=args, cwd=cwd,
+            stdin=infile, stdout=outfile, stderr=errfile, timeout=timeout,
+            precise=precise))
 
-  def _ExecInternal(self, args, cwd, stdin, stdout, stderr, timeout=None):
-    start_time = time.time()
-    p = subprocess.Popen(args, cwd=cwd,
-                         stdin=stdin, stdout=stdout, stderr=stderr)
-    if timeout is not None:
-      timer = threading.Timer(timeout,
-                              lambda: os.kill(p.pid, signal.SIGKILL))
-      timer.start()
-    code = p.wait()
-    end_time = time.time()
-    if timeout is not None:
-      timer.cancel()
+  @GeneratorTask.FromFunction
+  def _ExecInternal(self, args, cwd, stdin, stdout, stderr,
+                    timeout=None, precise=False):
+    task = ExternalProcessTask(
+      args, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, timeout=timeout,
+      exclusive=precise)
+    proc = yield task
+    code = proc.returncode
+    # Retry if TLE.
+    if not precise and code == -(signal.SIGKILL):
+      task = ExternalProcessTask(
+        args, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, timeout=timeout,
+        exclusive=True)
+      proc = yield task
+      code = proc.returncode
     if code == 0:
       status = RunResult.OK
     elif code == -(signal.SIGKILL):
@@ -665,7 +1304,7 @@ class FileBasedCode(Code):
       status = RunResult.RE
     else:
       status = RunResult.NG
-    return RunResult(status, end_time-start_time)
+    yield RunResult(status, task.time)
 
 
 
@@ -676,10 +1315,10 @@ class CCode(FileBasedCode):
       src_name=src_name, src_dir=src_dir, out_dir=out_dir,
       prereqs=['gcc'])
     self.exe_name = os.path.splitext(src_name)[0] + FileNames.EXE_EXT
-    self.compile_args = ['gcc',
-                         '-o', os.path.join(out_dir, self.exe_name),
-                         src_name] + flags
-    self.run_args = [os.path.join(out_dir, self.exe_name)]
+    self.compile_args = tuple(['gcc',
+                               '-o', os.path.join(out_dir, self.exe_name),
+                               src_name] + flags)
+    self.run_args = tuple([os.path.join(out_dir, self.exe_name)])
 
 
 
@@ -690,10 +1329,10 @@ class CXXCode(FileBasedCode):
       src_name=src_name, src_dir=src_dir, out_dir=out_dir,
       prereqs=['g++'])
     self.exe_name = os.path.splitext(src_name)[0] + FileNames.EXE_EXT
-    self.compile_args = ['g++',
-                         '-o', os.path.join(out_dir, self.exe_name),
-                         src_name] + flags
-    self.run_args = [os.path.join(out_dir, self.exe_name)]
+    self.compile_args = tuple(['g++',
+                               '-o', os.path.join(out_dir, self.exe_name),
+                               src_name] + flags)
+    self.run_args = tuple([os.path.join(out_dir, self.exe_name)])
 
 
 
@@ -706,12 +1345,12 @@ class JavaCode(FileBasedCode):
       prereqs=['javac', 'java'])
     self.encoding = encoding
     self.mainclass = mainclass
-    self.compile_args = (['javac', '-encoding', encoding,
-                          '-d', FileUtil.ConvPath(out_dir)] +
-                         compile_flags + [src_name])
-    self.run_args = (['java', '-Dline.separator=\n',
-                      '-cp', FileUtil.ConvPath(out_dir)] +
-                     run_flags + [mainclass])
+    self.compile_args = tuple(['javac', '-encoding', encoding,
+                               '-d', FileUtil.ConvPath(out_dir)] +
+                              compile_flags + [src_name])
+    self.run_args = tuple(['java', '-Dline.separator=\n',
+                           '-cp', FileUtil.ConvPath(out_dir)] +
+                          run_flags + [mainclass])
 
 
 
@@ -724,18 +1363,19 @@ class ScriptCode(FileBasedCode):
       src_name=src_name, src_dir=src_dir, out_dir=out_dir,
       prereqs=[interpreter])
     self.interpreter = interpreter
-    self.run_args = [interpreter, os.path.join(out_dir, src_name)]
+    self.run_args = tuple([interpreter, os.path.join(out_dir, src_name)])
 
+  @GeneratorTask.FromFunction
   def Compile(self):
     try:
       self.MakeOutDir()
       FileUtil.CopyFile(os.path.join(self.src_dir, self.src_name),
                         os.path.join(self.out_dir, self.src_name))
-      return RunResult(RunResult.OK, 0.0)
+      result = RunResult(RunResult.OK, 0.0)
     except Exception, e:
       FileUtil.WriteFile(str(e), os.path.join(self.out_dir, self.log_name))
-      return RunResult(RunResult.RE, None)
-
+      result = RunResult(RunResult.RE, None)
+    yield result
 
 
 class DiffCode(Code):
@@ -746,37 +1386,43 @@ class DiffCode(Code):
     super(DiffCode, self).__init__()
     self.log_name = 'diff.log'
 
+  @GeneratorTask.FromFunction
   def Compile(self):
     if not FileUtil.LocateBinary('diff'):
-      return RunResult("%s: diff" % RunResult.PM, None)
-    return RunResult(RunResult.OK, 0.0)
+      yield RunResult("%s: diff" % RunResult.PM, None)
+    yield RunResult(RunResult.OK, 0.0)
 
-  def Run(self, args, cwd, input, output, timeout, redirect_error=False):
+  @GeneratorTask.FromFunction
+  def Run(self, args, cwd, input, output, timeout, precise, redirect_error=False):
     parser = optparse.OptionParser()
     parser.add_option('-i', '--infile', dest='infile')
     parser.add_option('-d', '--difffile', dest='difffile')
     parser.add_option('-o', '--outfile', dest='outfile')
-    (options, pos_args) = parser.parse_args([''] + args)
-    run_args = ['diff', '-u', options.difffile, options.outfile]
+    (options, pos_args) = parser.parse_args([''] + list(args))
+    run_args = ('diff', '-u', options.difffile, options.outfile)
     with open(input, 'r') as infile:
       with open(output, 'w') as outfile:
         if redirect_error:
           errfile = subprocess.STDOUT
         else:
           errfile = FileUtil.OpenNull()
+        task = ExternalProcessTask(
+          run_args, cwd=cwd, stdin=infile, stdout=outfile, stderr=errfile,
+          timeout=timeout)
         try:
-          ret = subprocess.call(run_args, cwd=cwd,
-                                stdin=infile, stdout=outfile, stderr=errfile)
+          proc = yield task
         except OSError:
-          return RunResult(RunResult.RE, None)
+          yield RunResult(RunResult.RE, None)
+        ret = proc.returncode
         if ret == 0:
-          return RunResult(RunResult.OK, 0.0)
+          yield RunResult(RunResult.OK, task.time)
         if ret > 0:
-          return RunResult(RunResult.NG, None)
-        return RunResult(RunResult.RE, None)
+          yield RunResult(RunResult.NG, None)
+        yield RunResult(RunResult.RE, None)
 
+  @GeneratorTask.FromFunction
   def Clean(self):
-    return True
+    yield True
 
 
 class ConfigurableObject(object):
@@ -838,7 +1484,7 @@ class ConfigurableObject(object):
       try:
         attr = getattr(self, name)
         self._export_dict[attr.im_func._export_config] = attr
-      except:
+      except AttributeError:
         pass
     # Evaluate config.
     script = FileUtil.ReadFile(self.real_config_file)
@@ -1015,44 +1661,41 @@ class RimeRoot(ConfigurableObject):
         return obj
     return None
 
+  @GeneratorTask.FromFunction
   def Build(self, ctx):
     """
     Build all.
     """
-    success = True
-    for problem in self.problems:
-      if not problem.Build(ctx):
-        success = False
-    return success
+    results = yield TaskBranch(
+      [problem.Build(ctx) for problem in self.problems])
+    yield all(results)
 
+  @GeneratorTask.FromFunction
   def Test(self, ctx):
     """
     Test all.
     """
-    results = []
-    for problem in self.problems:
-      results.extend(problem.Test(ctx))
-    return results
+    results = yield TaskBranch(
+      [problem.Test(ctx) for problem in self.problems])
+    yield list(itertools.chain(*results))
 
+  @GeneratorTask.FromFunction
   def Pack(self, ctx):
     """
     Pack all.
     """
-    success = True
-    for problem in self.problems:
-      if not problem.Pack(ctx):
-        success = False
-    return success
+    results = yield TaskBranch(
+      [problem.Pack(ctx) for problem in self.problems])
+    yield all(results)
 
+  @GeneratorTask.FromFunction
   def Clean(self, ctx):
     """
     Clean all.
     """
-    success = True
-    for problem in self.problems:
-      if not problem.Clean(ctx):
-        success = False
-    return success
+    results = yield TaskBranch(
+      [problem.Clean(ctx) for problem in self.problems])
+    yield all(results)
 
 
 
@@ -1129,30 +1772,31 @@ class Problem(BuildableObject):
         return obj
     return self.tests.FindByBaseDir(base_dir)
 
+  @GeneratorTask.FromFunction
   def Build(self, ctx):
     """
     Build all solutions and tests.
     """
-    success = True
-    for solution in self.solutions:
-      if not solution.Build(ctx):
-        success = False
-    if not self.tests.Build(ctx):
-      success = False
-    return success
+    results = yield TaskBranch(
+      [solution.Build(ctx) for solution in self.solutions] +
+      [self.tests.Build(ctx)])
+    yield all(results)
 
+  @GeneratorTask.FromFunction
   def Test(self, ctx):
     """
     Run tests.
     """
-    return self.tests.Test(ctx)
+    yield (yield self.tests.Test(ctx))
 
+  @GeneratorTask.FromFunction
   def Pack(self, ctx):
     """
     Pack tests.
     """
-    return self.tests.Pack(ctx)
+    yield (yield self.tests.Pack(ctx))
 
+  @GeneratorTask.FromFunction
   def Clean(self, ctx):
     """
     Clean all solutions and tests.
@@ -1165,7 +1809,7 @@ class Problem(BuildableObject):
       except:
         ctx.errors.Exception(self)
         success = False
-    return success
+    yield success
 
 
 
@@ -1206,34 +1850,34 @@ class Tests(BuildableObject):
     if self.problem.reference_solution:
       self._AddDependency(self.problem.reference_solution)
 
+  @GeneratorTask.FromFunction
   def Build(self, ctx):
     """
     Build tests.
     """
     if self.IsBuildCached():
-      return True
+      yield True
     if not self._InitOutputDir(ctx):
-      return False
-    if not self._CompileGenerator(ctx):
-      return False
-    if not self._CompileValidator(ctx):
-      return False
-    if not self._CompileJudge(ctx):
-      return False
-    if not self._RunGenerator(ctx):
-      return False
-    if not self._RunValidator(ctx):
-      return False
+      yield False
+    if not all((yield TaskBranch([
+            self._CompileGenerator(ctx),
+            self._CompileValidator(ctx),
+            self._CompileJudge(ctx)]))):
+      yield False
+    if not (yield self._RunGenerator(ctx)):
+      yield False
+    if not (yield self._RunValidator(ctx)):
+      yield False
     if self.ListInputFiles():
-      if not self._CompileReferenceSolution(ctx):
-        return False
-      if not self._RunReferenceSolution(ctx):
-        return False
-      if not self._GenerateConcatTest(ctx):
-        return False
+      if not (yield self._CompileReferenceSolution(ctx)):
+        yield False
+      if not (yield self._RunReferenceSolution(ctx)):
+        yield False
+      if not (yield self._GenerateConcatTest(ctx)):
+        yield False
     if not self.SetCacheStamp(ctx):
-      return False
-    return True
+      yield False
+    yield True
 
   def _InitOutputDir(self, ctx):
     """
@@ -1247,51 +1891,82 @@ class Tests(BuildableObject):
       ctx.errors.Exception(self)
       return False
 
+  @GeneratorTask.FromFunction
   def _CompileGenerator(self, ctx):
     """
     Compile all input generators.
     """
-    for generator in self.generators:
-      if not generator.QUIET_COMPILE:
-        Console.PrintAction("COMPILE", self, generator.src_name)
-      res = generator.Compile()
-      if res.status != RunResult.OK:
-        ctx.errors.Error(self,
-                         "%s: Compile Error (%s)" % (generator.src_name, res.status))
-        Console.PrintLog(generator.ReadCompileLog())
-        return False
-    return True
+    results = yield TaskBranch([
+        self._CompileGeneratorOne(generator, ctx)
+        for generator in self.generators])
+    yield all(results)
 
+  @GeneratorTask.FromFunction
+  def _CompileGeneratorOne(self, generator, ctx):
+    """
+    Compile a single input generator.
+    """
+    if not generator.QUIET_COMPILE:
+      Console.PrintAction("COMPILE", self, generator.src_name)
+    res = yield generator.Compile()
+    if res.status != RunResult.OK:
+      ctx.errors.Error(self,
+                       "%s: Compile Error (%s)" % (generator.src_name, res.status))
+      Console.PrintLog(generator.ReadCompileLog())
+      raise Bailout([False])
+    yield True
+
+  @GeneratorTask.FromFunction
   def _RunGenerator(self, ctx):
     """
     Run all input generators.
     """
-    for generator in self.generators:
-      Console.PrintAction("GENERATE", self, generator.src_name)
-      res = generator.Run(
-        args=[], cwd=self.out_dir,
-        input=os.devnull, output=os.devnull, timeout=None)
-      if res.status != RunResult.OK:
-        ctx.errors.Error(self,
-                         "%s: %s" % (generator.src_name, res.status))
-        return False
-    return True
+    results = yield TaskBranch([
+        self._RunGeneratorOne(generator, ctx)
+        for generator in self.generators])
+    yield all(results)
 
+  @GeneratorTask.FromFunction
+  def _RunGeneratorOne(self, generator, ctx):
+    """
+    Run a single input generator.
+    """
+    Console.PrintAction("GENERATE", self, generator.src_name)
+    res = yield generator.Run(
+      args=(), cwd=self.out_dir,
+      input=os.devnull, output=os.devnull, timeout=None, precise=False)
+    if res.status != RunResult.OK:
+      ctx.errors.Error(self,
+                       "%s: %s" % (generator.src_name, res.status))
+      raise Bailout([False])
+    yield True
+
+  @GeneratorTask.FromFunction
   def _CompileValidator(self, ctx):
     """
     Compile input validators.
     """
-    for validator in self.validators:
-      if not validator.QUIET_COMPILE:
-        Console.PrintAction("COMPILE", self, validator.src_name)
-      res = validator.Compile()
-      if res.status != RunResult.OK:
-        ctx.errors.Error(self,
-                         "%s: Compile Error (%s)" % (validator.src_name, res.status))
-        Console.PrintLog(validator.ReadCompileLog())
-        return False
-    return True
+    results = yield TaskBranch([
+        self._CompileValidatorOne(validator, ctx)
+        for validator in self.validators])
+    yield all(results)
 
+  @GeneratorTask.FromFunction
+  def _CompileValidatorOne(self, validator, ctx):
+    """
+    Compile a single input validator.
+    """
+    if not validator.QUIET_COMPILE:
+      Console.PrintAction("COMPILE", self, validator.src_name)
+    res = yield validator.Compile()
+    if res.status != RunResult.OK:
+      ctx.errors.Error(self,
+                       "%s: Compile Error (%s)" % (validator.src_name, res.status))
+      Console.PrintLog(validator.ReadCompileLog())
+      raise Bailout([False])
+    yield True
+
+  @GeneratorTask.FromFunction
   def _RunValidator(self, ctx):
     """
     Run input validators.
@@ -1299,52 +1974,62 @@ class Tests(BuildableObject):
     if not self.validators:
       Console.PrintAction("VALIDATE", self, "skipping: validator unavailable")
       ctx.errors.Warning(self, "Validator Unavailable")
-      return True
-    for validator in self.validators:
-      Console.PrintAction("VALIDATE", self, progress=True)
-      infiles = self.ListInputFiles()
-      for (i, infile) in enumerate(infiles):
-        Console.PrintAction(
-          "VALIDATE", self,
-          "[%d/%d] %s" % (i+1, len(infiles), infile),
-          progress=True)
-        validationfile = os.path.splitext(infile)[0] + FileNames.VALIDATION_EXT
-        res = validator.Run(
-          args=[], cwd=self.out_dir,
-          input=os.path.join(self.out_dir, infile),
-          output=os.path.join(self.out_dir, validationfile),
-          timeout=None,
-          redirect_error=True)
-        if res.status == RunResult.NG:
-          ctx.errors.Error(self,
-                           "%s: Validation Failed" % infile)
-          log = FileUtil.ReadFile(os.path.join(self.out_dir, validationfile))
-          Console.PrintLog(log)
-          return False
-        elif res.status != RunResult.OK:
-          ctx.errors.Error(self,
-                           "%s: Validator Failed: %s" % (infile, res.status))
-          return False
-      Console.PrintAction("VALIDATE", self, "OK")
-    return True
+      yield True
+    infiles = self.ListInputFiles()
+    results = yield TaskBranch([
+        self._RunValidatorOne(validator, infile, ctx)
+        for validator in self.validators
+        for infile in infiles])
+    if not all(results):
+      yield False
+    Console.PrintAction("VALIDATE", self, "OK")
+    yield True
 
+  @GeneratorTask.FromFunction
+  def _RunValidatorOne(self, validator, infile, ctx):
+    """
+    Run an input validator against a single input file.
+    """
+    #Console.PrintAction("VALIDATE", self,
+    #                    "%s" % infile, progress=True)
+    validationfile = os.path.splitext(infile)[0] + FileNames.VALIDATION_EXT
+    res = yield validator.Run(
+      args=(), cwd=self.out_dir,
+      input=os.path.join(self.out_dir, infile),
+      output=os.path.join(self.out_dir, validationfile),
+      timeout=None, precise=False,
+      redirect_error=True)
+    if res.status == RunResult.NG:
+      ctx.errors.Error(self,
+                       "%s: Validation Failed" % infile)
+      log = FileUtil.ReadFile(os.path.join(self.out_dir, validationfile))
+      Console.PrintLog(log)
+      raise Bailout([False])
+    elif res.status != RunResult.OK:
+      ctx.errors.Error(self,
+                       "%s: Validator Failed: %s" % (infile, res.status))
+      raise Bailout([False])
+    Console.PrintAction("VALIDATE", self,
+                        "%s: PASSED" % infile, progress=True)
+    yield True
+
+  @GeneratorTask.FromFunction
   def _CompileJudge(self, ctx):
     """
     Compile judge.
     """
     if self.judge is None:
-      return True
+      yield True
     if not self.judge.QUIET_COMPILE:
-      Console.PrintAction("COMPILE",
-                          self,
-                          self.judge.src_name)
-    res = self.judge.Compile()
+      Console.PrintAction("COMPILE", self, self.judge.src_name)
+    res = yield self.judge.Compile()
     if res.status != RunResult.OK:
       ctx.errors.Error(self, "%s: Compile Error (%s)" % (self.judge.src_name, res.status))
       Console.PrintLog(self.judge.ReadCompileLog())
-      return False
-    return True
+      yield False
+    yield True
 
+  @GeneratorTask.FromFunction
   def _CompileReferenceSolution(self, ctx):
     """
     Compile the reference solution.
@@ -1352,9 +2037,10 @@ class Tests(BuildableObject):
     reference_solution = self.problem.reference_solution
     if reference_solution is None:
       ctx.errors.Error(self, "Reference solution is not available")
-      return False
-    return reference_solution.Build(ctx)
+      yield False
+    yield (yield reference_solution.Build(ctx))
 
+  @GeneratorTask.FromFunction
   def _RunReferenceSolution(self, ctx):
     """
     Run the reference solution to generate reference outputs.
@@ -1362,32 +2048,42 @@ class Tests(BuildableObject):
     reference_solution = self.problem.reference_solution
     if reference_solution is None:
       ctx.errors.Error(self, "Reference solution is not available")
-      return False
-    Console.PrintAction("REFRUN", reference_solution, progress=True)
+      yield False
     infiles = self.ListInputFiles()
-    for (i, infile) in enumerate(infiles):
-      difffile = os.path.splitext(infile)[0] + FileNames.DIFF_EXT
-      if os.path.isfile(os.path.join(self.out_dir, difffile)):
-        continue
-      Console.PrintAction(
-        "REFRUN", reference_solution,
-        "[%d/%d] %s" % (i+1, len(infiles), infile),
-        progress=True)
-      res = reference_solution.Run(
-        args=[], cwd=self.out_dir,
-        input=os.path.join(self.out_dir, infile),
-        output=os.path.join(self.out_dir, difffile),
-        timeout=None)
-      if res.status != RunResult.OK:
-        ctx.errors.Error(reference_solution, res.status)
-        return False
-    Console.PrintAction(
-      "REFRUN", reference_solution)
-    return True
+    results = yield TaskBranch([
+        self._RunReferenceSolutionOne(reference_solution, infile, ctx)
+        for infile in infiles])
+    if not all(results):
+      yield False
+    Console.PrintAction("REFRUN", reference_solution)
+    yield True
 
+  @GeneratorTask.FromFunction
+  def _RunReferenceSolutionOne(self, reference_solution, infile, ctx):
+    """
+    Run the reference solution against a single input file.
+    """
+    difffile = os.path.splitext(infile)[0] + FileNames.DIFF_EXT
+    if os.path.isfile(os.path.join(self.out_dir, difffile)):
+      yield True
+    #Console.PrintAction("REFRUN", reference_solution,
+    #                    "%s" % infile, progress=True)
+    res = yield reference_solution.Run(
+      args=(), cwd=self.out_dir,
+      input=os.path.join(self.out_dir, infile),
+      output=os.path.join(self.out_dir, difffile),
+      timeout=None, precise=False)
+    if res.status != RunResult.OK:
+      ctx.errors.Error(reference_solution, res.status)
+      raise Bailout([False])
+    Console.PrintAction("REFRUN", reference_solution,
+                        "%s: DONE" % infile, progress=True)
+    yield True
+
+  @GeneratorTask.FromFunction
   def _GenerateConcatTest(self, ctx):
     if not self.concat_test:
-      return True
+      yield True
     Console.PrintAction("GENERATE", self, progress=True)
     concat_infile = FileNames.CONCAT_INFILE
     concat_difffile = FileNames.CONCAT_DIFFFILE
@@ -1419,48 +2115,50 @@ class Tests(BuildableObject):
         concat_difffile,
         os.path.getsize(os.path.join(self.out_dir, concat_difffile)),
         ))
-    return True
+    yield True
 
+  @GeneratorTask.FromFunction
   def Test(self, ctx):
     """
     Test all solutions.
     """
-    if not self.Build(ctx):
-      return []
-    results = []
-    for solution in self.problem.solutions:
-      results.extend(self.TestSolution(solution, ctx))
-    return results
+    if not (yield self.Build(ctx)):
+      yield []
+    results = yield TaskBranch([
+        self.TestSolution(solution, ctx)
+        for solution in self.problem.solutions])
+    yield list(itertools.chain(*results))
 
+  @GeneratorTask.FromFunction
   def TestSolution(self, solution, ctx):
     """
     Test a single solution.
     """
     # Note: though Tests.Test() executes Tests.Build(), it is also
     # required here because Solution.Test() calls this function directly.
-    if not self.Build(ctx):
+    if not (yield self.Build(ctx)):
       result = TestResult(self.problem, solution, [])
       result.good = False
       result.passed = False
       result.detail = "Failed to build tests"
-      return [result]
-    if not solution.Build(ctx):
+      yield [result]
+    if not (yield solution.Build(ctx)):
       result = TestResult(self.problem, solution, [])
       result.good = False
       result.passed = False
       result.detail = "Compile Error"
-      return [result]
+      yield [result]
     Console.PrintAction("TEST", solution, progress=True)
     if not solution.IsCorrect() and solution.challenge_cases:
-      result = self._TestSolutionWithChallengeCases(solution, ctx)
+      result = yield self._TestSolutionWithChallengeCases(solution, ctx)
     else:
-      result = self._TestSolutionWithAllCases(solution, ctx)
+      result = yield self._TestSolutionWithAllCases(solution, ctx)
     if result.good and result.passed:
       assert not result.detail
-      if result.IsTimeStatsAvailable():
+      if result.IsTimeStatsAvailable(ctx):
         result.detail = result.GetTimeStats()
       else:
-        result.detail = "(no test)"
+        result.detail = "(*/*)"
     else:
       assert result.detail
     status_row = []
@@ -1478,15 +2176,15 @@ class Tests(BuildableObject):
       judgefile = os.path.splitext(result.ruling_file)[0] + FileNames.JUDGE_EXT
       log = FileUtil.ReadFile(os.path.join(solution.out_dir, judgefile))
       Console.PrintLog(log)
-    return [result]
+    yield [result]
 
+  @GeneratorTask.FromFunction
   def _TestSolutionWithChallengeCases(self, solution, ctx):
     """
     Test a wrong solution which has explicitly-specified challenge cases.
     """
     infiles = self.ListInputFiles()
     challenge_cases = self._SortInputFiles(solution.challenge_cases)
-    cookie = solution.GetCacheStamp()
     result = TestResult(self.problem, solution, challenge_cases)
     # Ensure all challenge cases exist.
     all_exists = True
@@ -1499,84 +2197,106 @@ class Tests(BuildableObject):
       result.good = False
       result.passed = False
       result.detail = "Challenge case not found"
-      return result
+      yield result
     # Try challenge cases.
-    for (i, infile) in enumerate(challenge_cases):
-      Console.PrintAction(
-        "TEST", solution,
-        "[%d/%d] %s" % (i+1, len(challenge_cases), infile),
-        progress=True)
-      (verdict, time, cached) = self._TestOneCase(
-        solution, infile, cookie, ctx)
-      if cached:
-        result.cached = True
-      result.cases[infile].verdict = verdict
-      if verdict == TestResult.AC:
-        result.ruling_file = infile
-        result.good = False
-        result.passed = True
-        result.detail = "%s: Unexpectedly Accepted" % infile
-        ctx.errors.Error(solution, result.detail, quiet=True)
-        break
-      elif verdict not in (TestResult.WA, TestResult.TLE, TestResult.RE):
-        result.ruling_file = infile
-        result.good = False
-        result.passed = False
-        result.detail = "%s: Judge Error" % infile
-        ctx.errors.Error(solution, result.detail, quiet=True)
-        break
+    yield TaskBranch([
+        self._TestSolutionWithChallengeCasesOne(solution, infile, result, ctx)
+        for infile in challenge_cases])
     if result.good is None:
       result.good = True
       result.passed = False
       result.detail = "Expectedly Failed"
-    return result
+    yield result
 
+  @GeneratorTask.FromFunction
+  def _TestSolutionWithChallengeCasesOne(self, solution, infile, result, ctx):
+    """
+    Test a wrong solution which has explicitly-specified challenge cases.
+    """
+    #Console.PrintAction("TEST", solution,
+    #                    "%s" % infile, progress=True)
+    cookie = solution.GetCacheStamp()
+    (verdict, time, cached) = yield self._TestOneCase(
+      solution, infile, cookie, ctx)
+    if cached:
+      result.cached = True
+    result.cases[infile].verdict = verdict
+    if verdict == TestResult.AC:
+      result.ruling_file = infile
+      result.good = False
+      result.passed = True
+      result.detail = "%s: Unexpectedly Accepted" % infile
+      ctx.errors.Error(solution, result.detail)
+      raise Bailout([False])
+    elif verdict not in (TestResult.WA, TestResult.TLE, TestResult.RE):
+      result.ruling_file = infile
+      result.good = False
+      result.passed = False
+      result.detail = "%s: Judge Error" % infile
+      ctx.errors.Error(solution, result.detail)
+      raise Bailout([False])
+    Console.PrintAction("TEST", solution,
+                        "%s: PASSED" % infile, progress=True)
+    yield True
+
+  @GeneratorTask.FromFunction
   def _TestSolutionWithAllCases(self, solution, ctx):
     """
     Test a solution without challenge cases.
     The solution can be marked as wrong but without challenge cases.
     """
     infiles = self.ListInputFiles(include_concat=True)
-    cookie = solution.GetCacheStamp()
     result = TestResult(self.problem, solution, infiles)
     # Try all cases.
-    for (i, infile) in enumerate(infiles):
-      Console.PrintAction(
-        "TEST", solution,
-        "[%d/%d] %s" % (i+1, len(infiles), infile),
-        progress=True)
-      ignore_timeout = (infile == FileNames.CONCAT_INFILE)
-      (verdict, time, cached) = self._TestOneCase(
-        solution, infile, cookie, ctx, ignore_timeout=ignore_timeout)
-      if cached:
-        result.cached = True
-      result.cases[infile].verdict = verdict
-      if verdict not in (TestResult.AC, TestResult.WA, TestResult.TLE, TestResult.RE):
-        result.ruling_file = infile
-        result.good = False
-        result.passed = False
-        result.detail = "%s: Judge Error" % infile
-        ctx.errors.Error(solution, result.detail, quiet=True)
-        break
-      elif verdict != TestResult.AC:
-        result.ruling_file = infile
-        result.passed = False
-        result.detail = "%s: %s" % (infile, verdict)
-        if solution.IsCorrect():
-          result.good = False
-          ctx.errors.Error(solution, result.detail, quiet=True)
-        else:
-          result.good = True
-        break
-      result.cases[infile].time = time
+    yield TaskBranch([
+        self._TestSolutionWithAllCasesOne(solution, infile, result, ctx)
+        for infile in infiles])
     if result.good is None:
       result.good = solution.IsCorrect()
       result.passed = True
       if not result.good:
         result.detail = "Unexpectedly Passed"
-    return result
+    yield result
 
-  def _TestOneCase(self, solution, infile, cookie, ctx, ignore_timeout=False):
+  @GeneratorTask.FromFunction
+  def _TestSolutionWithAllCasesOne(self, solution, infile, result, ctx):
+    """
+    Test a solution without challenge cases.
+    The solution can be marked as wrong but without challenge cases.
+    """
+    #Console.PrintAction("TEST", solution,
+    #                    "%s" % infile, progress=True)
+    cookie = solution.GetCacheStamp()
+    ignore_timeout = (infile == FileNames.CONCAT_INFILE)
+    (verdict, time, cached) = yield self._TestOneCase(
+      solution, infile, cookie, ignore_timeout, ctx)
+    if cached:
+      result.cached = True
+    result.cases[infile].verdict = verdict
+    if verdict not in (TestResult.AC, TestResult.WA, TestResult.TLE, TestResult.RE):
+      result.ruling_file = infile
+      result.good = False
+      result.passed = False
+      result.detail = "%s: Judge Error" % infile
+      ctx.errors.Error(solution, result.detail)
+      raise Bailout([False])
+    elif verdict != TestResult.AC:
+      result.ruling_file = infile
+      result.passed = False
+      result.detail = "%s: %s" % (infile, verdict)
+      if solution.IsCorrect():
+        result.good = False
+        ctx.errors.Error(solution, result.detail)
+      else:
+        result.good = True
+      raise Bailout([False])
+    result.cases[infile].time = time
+    Console.PrintAction("TEST", solution,
+                        "%s: PASSED" % infile, progress=True)
+    yield True
+
+  @GeneratorTask.FromFunction
+  def _TestOneCase(self, solution, infile, cookie, ignore_timeout, ctx):
     """
     Test a solution with one case.
     Cache results if option is set.
@@ -1593,15 +2313,16 @@ class Tests(BuildableObject):
           ctx.errors.Exception(solution)
           cached_cookie = None
         if cached_cookie == cookie:
-          return tuple(list(result)+[True])
-    result = self._TestOneCaseNoCache(solution, infile, ignore_timeout=ignore_timeout)
+          yield tuple(list(result)+[True])
+    result = yield self._TestOneCaseNoCache(solution, infile, ignore_timeout, ctx)
     try:
       FileUtil.PickleSave((cookie, result), cachefile)
     except:
       ctx.errors.Exception(solution)
-    return tuple(list(result)+[False])
+    yield tuple(list(result)+[False])
 
-  def _TestOneCaseNoCache(self, solution, infile, ignore_timeout=False):
+  @GeneratorTask.FromFunction
+  def _TestOneCaseNoCache(self, solution, infile, ignore_timeout, ctx):
     """
     Test a solution with one case.
     Never cache results.
@@ -1613,30 +2334,32 @@ class Tests(BuildableObject):
     timeout = self.problem.timeout
     if ignore_timeout:
       timeout = None
-    res = solution.Run(
-      args=[], cwd=solution.out_dir,
+    precise = (ctx.options.precise or ctx.options.parallelism == 1)
+    res = yield solution.Run(
+      args=(), cwd=solution.out_dir,
       input=os.path.join(self.out_dir, infile),
       output=os.path.join(solution.out_dir, outfile),
-      timeout=timeout)
+      timeout=timeout, precise=precise)
     if res.status == RunResult.TLE:
-      return (TestResult.TLE, None)
+      yield (TestResult.TLE, None)
     if res.status != RunResult.OK:
-      return (TestResult.RE, None)
+      yield (TestResult.RE, None)
     time = res.time
-    res = self.judge.Run(
-      args=['--infile', os.path.join(self.out_dir, infile),
+    res = yield self.judge.Run(
+      args=('--infile', os.path.join(self.out_dir, infile),
             '--difffile', os.path.join(self.out_dir, difffile),
-            '--outfile', os.path.join(solution.out_dir, outfile)],
+            '--outfile', os.path.join(solution.out_dir, outfile)),
       cwd=self.out_dir,
       input=os.devnull,
       output=os.path.join(solution.out_dir, judgefile),
-      timeout=None)
+      timeout=None, precise=False)
     if res.status == RunResult.OK:
-      return (TestResult.AC, time)
+      yield (TestResult.AC, time)
     if res.status == RunResult.NG:
-      return (TestResult.WA, None)
-    return ("Validator " + res.status, None)
+      yield (TestResult.WA, None)
+    yield ("Validator " + res.status, None)
 
+  @GeneratorTask.FromFunction
   def Pack(self, ctx):
     """
     Pack test cases.
@@ -1645,8 +2368,8 @@ class Tests(BuildableObject):
       # TODO: do caching of packed tests output here.
       pass
     else:
-      if not self.Build(ctx):
-        return False
+      if not (yield self.Build(ctx)):
+        yield False
     infiles = self.ListInputFiles()
     Console.PrintAction("PACK", self, progress=True)
     if not os.path.isdir(self.pack_dir):
@@ -1654,7 +2377,7 @@ class Tests(BuildableObject):
         FileUtil.MakeDir(self.pack_dir)
       except:
         ctx.errors.Exception(self)
-        return False
+        yield False
     for (i, infile) in enumerate(infiles):
       basename = os.path.splitext(infile)[0]
       difffile = basename + FileNames.DIFF_EXT
@@ -1677,35 +2400,35 @@ class Tests(BuildableObject):
                           os.path.join(self.pack_dir, packed_difffile))
       except:
         ctx.errors.Exception(self)
-        return False
-    tar_args = ["tar", "czf",
+        yield False
+    tar_args = ("tar", "czf",
                 os.path.join(os.pardir, FileNames.TESTS_PACKED_TARBALL),
-                os.curdir]
+                os.curdir)
     Console.PrintAction(
       "PACK",
       self,
       " ".join(tar_args),
       progress=True)
-    ret = -1
+    devnull = FileUtil.OpenNull()
+    task = ExternalProcessTask(
+      tar_args, cwd=self.pack_dir,
+      stdin=devnull, stdout=devnull, stderr=devnull)
     try:
-      devnull = FileUtil.OpenNull()
-      ret = subprocess.call(tar_args,
-                            cwd=self.pack_dir,
-                            stdin=devnull,
-                            stdout=devnull,
-                            stderr=devnull)
+      proc = yield task
     except:
       ctx.errors.Exception(self)
-      return False
+      yield False
+    ret = proc.returncode
     if ret != 0:
       ctx.errors.Error(self, "tar failed: ret = %d" % ret)
-      return False
+      yield False
     Console.PrintAction(
       "PACK",
       self,
       FileNames.TESTS_PACKED_TARBALL)
-    return True
+    yield True
 
+  @GeneratorTask.FromFunction
   def Clean(self, ctx):
     """
     Remove test cases.
@@ -1715,6 +2438,7 @@ class Tests(BuildableObject):
       FileUtil.RemoveTree(self.out_dir)
     except:
       ctx.errors.Exception(self)
+    yield True
 
   def ListInputFiles(self, include_concat=False):
     """
@@ -1813,6 +2537,7 @@ class Solution(BuildableObject):
     """
     return self.correct
 
+  @GeneratorTask.FromFunction
   def Build(self, ctx):
     """
     Build this solution.
@@ -1820,45 +2545,49 @@ class Solution(BuildableObject):
     #Console.PrintAction("BUILD", self)
     if self.IsBuildCached():
       Console.PrintAction("COMPILE", self, "up-to-date")
-      return True
+      yield True
     if not self.code.QUIET_COMPILE:
       Console.PrintAction("COMPILE", self)
-    res = self.code.Compile()
+    res = yield self.code.Compile()
     log = self.code.ReadCompileLog()
     if res.status != RunResult.OK:
       ctx.errors.Error(self, "Compile Error (%s)" % res.status)
       Console.PrintLog(log)
-      return False
+      yield False
     if log:
       ctx.errors.Warning(self, "Compiler warnings found")
       Console.PrintLog(log)
     if not self.SetCacheStamp(ctx):
-      return False
-    return True
+      yield False
+    yield True
 
+  @GeneratorTask.FromFunction
   def Test(self, ctx):
     """
     Test this solution.
     """
-    return self.problem.tests.TestSolution(self, ctx)
+    yield (yield self.problem.tests.TestSolution(self, ctx))
 
-  def Run(self, args, cwd, input, output, timeout):
+  @GeneratorTask.FromFunction
+  def Run(self, args, cwd, input, output, timeout, precise):
     """
     Run this solution.
     """
-    return self.code.Run(args=args, cwd=cwd,
-                         input=input, output=output, timeout=timeout)
+    yield (yield self.code.Run(
+        args=args, cwd=cwd, input=input, output=output,
+        timeout=timeout, precise=precise))
 
+  @GeneratorTask.FromFunction
   def Clean(self, ctx):
     """
     Clean this solution.
     """
     Console.PrintAction("CLEAN", self)
-    e = self.code.Clean()
+    e = yield self.code.Clean()
     if e:
       ctx.errors.Exception(self, e)
-      return False
-    return True
+      yield False
+    yield True
 
 
 
@@ -1902,27 +2631,34 @@ class Rime(object):
     if not obj:
       Console.PrintError("Target directory is not managed by Rime.")
       return 1
-    # Call.
-    if cmd == 'build':
-      success = obj.Build(ctx)
-      Console.Print("Finished Build.")
-      Console.Print()
-    elif cmd == 'test':
-      results = obj.Test(ctx)
-      Console.Print("Finished Test.")
-      Console.Print()
-      self.PrintTestSummary(results)
-    elif cmd == 'clean':
-      success = obj.Clean(ctx)
-      Console.Print("Finished Clean.")
-      Console.Print()
-    elif cmd == 'pack':
-      success = obj.Pack(ctx)
-      Console.Print("Finished Pack.")
-      Console.Print()
+    # Create TaskGraph with specified parallelism and run a task.
+    if options.parallelism == 1:
+      graph = SerialTaskGraph()
     else:
-      Console.PrintError("Unknown command: %s" % cmd)
-      return 1
+      graph = FiberTaskGraph(parallelism=ctx.options.parallelism)
+    try:
+      if cmd == 'build':
+        success = graph.Run(obj.Build(ctx))
+        Console.Print("Finished Build.")
+        Console.Print()
+      elif cmd == 'test':
+        results = graph.Run(obj.Test(ctx))
+        Console.Print("Finished Test.")
+        Console.Print()
+        self.PrintTestSummary(results, ctx)
+      elif cmd == 'clean':
+        success = graph.Run(obj.Clean(ctx))
+        Console.Print("Finished Clean.")
+        Console.Print()
+      elif cmd == 'pack':
+        success = graph.Run(obj.Pack(ctx))
+        Console.Print("Finished Pack.")
+        Console.Print()
+      else:
+        Console.PrintError("Unknown command: %s" % cmd)
+        return 1
+    finally:
+      graph.Close()
     Console.Print()
     Console.Print(Console.BOLD, "Error Summary:", Console.NORMAL)
     ctx.errors.PrintSummary()
@@ -1950,7 +2686,7 @@ class Rime(object):
     """
     print HELP_MESSAGE
 
-  def PrintTestSummary(self, results):
+  def PrintTestSummary(self, results, ctx):
     if len(results) == 0:
       return
     Console.Print(Console.BOLD, "Test Summary:", Console.NORMAL)
@@ -1981,10 +2717,10 @@ class Rime(object):
         " "]
       if result.good:
         if result.passed:
-          if result.IsTimeStatsAvailable():
+          if result.IsTimeStatsAvailable(ctx):
             status_row += [result.GetTimeStats()]
           else:
-            status_row += ["(no test)"]
+            status_row += ["(*/*)"]
         else:
           status_row += ["Expectedly Failed"]
       else:
@@ -2000,6 +2736,10 @@ class Rime(object):
       if result.cached:
         status_row += [" ", "(cached)"]
       Console.Print(*status_row)
+    if not (ctx.options.precise or ctx.options.parallelism == 1):
+      Console.Print("Note: Timings are not displayed when "
+                    "concurrent processing is enabled.")
+      Console.Print("      To show them, try -p (--precise).")
 
   def GetOptionParser(self):
     """
@@ -2007,6 +2747,10 @@ class Rime(object):
     """
     parser = optparse.OptionParser(add_help_option=False)
     parser.add_option('-h', '--help', dest='show_help',
+                      default=False, action="store_true")
+    parser.add_option('-j', '--parallelism', dest='parallelism',
+                      default=1, action="store", type="int")
+    parser.add_option('-p', '--precise', dest='precise',
                       default=False, action="store_true")
     parser.add_option('-C', '--cache-tests', dest='cache_tests',
                       default=False, action="store_true")
@@ -2062,5 +2806,6 @@ def main():
 
 
 if __name__ == '__main__':
+  #logging.basicConfig(level=logging.INFO)
   main()
 
