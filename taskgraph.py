@@ -34,6 +34,10 @@ import threading
 import time
 
 
+# State of tasks.
+RUNNING, WAITING, BLOCKED, READY, FINISHED, ABORTED = range(6)
+
+
 class Task(object):
 
   def __hash__(self):
@@ -201,7 +205,7 @@ class TaskPool(object):
     self.task_waits = dict()
     self.ready_tasks = []
     self.blocked_tasks = []
-    self.branch_stack = []
+    self.pending_stack = []
 
   def Run(self, init_task):
     self._BranchTask(None, [init_task])
@@ -224,7 +228,7 @@ class TaskPool(object):
     self._LogTaskStats()
     if next_task is None:
       return False
-    assert next_task not in self.task_counters
+    self._AssertTaskState(next_task, READY)
     exc_info = None
     if next_task in self.task_graph:
       if isinstance(self.task_graph[next_task], list):
@@ -255,42 +259,41 @@ class TaskPool(object):
     return True
 
   def _ExpandBranch(self):
-    if not self.branch_stack:
+    if not self.pending_stack:
       return False
     # Visit branches by depth first.
-    task, subtask = self.branch_stack.pop()
+    task, subtask = self.pending_stack.pop()
     self._BeginTask(subtask, task)
     return True
 
-  def _ThrowTask(self, task, exc_info):
-    assert not task.IsExclusive() or len(self.blocked_tasks) == 0
-    assert task not in self.task_graph
-    assert task not in self.task_counters
-    assert task not in self.cache
-    try:
-      logging.debug('_ThrowTask: %s: entering' % task)
-      result = task.Throw(*exc_info)
-      logging.debug('_ThrowTask: %s: exited' % task)
-      self._ProcessTaskResult(task, result)
-    except:
-      logging.debug('_ThrowTask: %s: exception raised' % task)
-      self._ProcessTaskException(task, sys.exc_info())
-
   def _ContinueTask(self, task, value):
     assert not task.IsExclusive() or len(self.blocked_tasks) == 0
-    assert task not in self.task_graph
-    assert task not in self.task_counters
-    assert task not in self.cache
+    self._AssertTaskState(task, RUNNING)
     try:
       logging.debug('_ContinueTask: %s: entering' % task)
       result = task.Continue(value)
-      logging.debug('_ContinueTask: %s: exited' % task)
-      self._ProcessTaskResult(task, result)
     except:
       logging.debug('_ContinueTask: %s: exception raised' % task)
       self._ProcessTaskException(task, sys.exc_info())
+    else:
+      logging.debug('_ContinueTask: %s: exited' % task)
+      self._ProcessTaskResult(task, result)
+
+  def _ThrowTask(self, task, exc_info):
+    assert not task.IsExclusive() or len(self.blocked_tasks) == 0
+    self._AssertTaskState(task, RUNNING)
+    try:
+      logging.debug('_ThrowTask: %s: entering' % task)
+      result = task.Throw(*exc_info)
+    except:
+      logging.debug('_ThrowTask: %s: exception raised' % task)
+      self._ProcessTaskException(task, sys.exc_info())
+    else:
+      logging.debug('_ThrowTask: %s: exited' % task)
+      self._ProcessTaskResult(task, result)
 
   def _ProcessTaskResult(self, task, result):
+    self._AssertTaskState(task, RUNNING)
     if isinstance(result, Task):
       logging.debug('_ProcessTaskResult: %s: received Task' % task)
       self._BranchTask(task, result)
@@ -310,9 +313,7 @@ class TaskPool(object):
       self._FinishTask(task, result)
 
   def _BranchTask(self, task, subtasks):
-    assert task not in self.task_graph
-    assert task not in self.task_counters
-    assert task not in self.cache
+    self._AssertTaskState(task, RUNNING)
     self.task_graph[task] = subtasks
     if not isinstance(subtasks, list):
       assert isinstance(subtasks, Task)
@@ -320,13 +321,14 @@ class TaskPool(object):
     if len(subtasks) == 0:
       logging.debug('_BranchTask: %s: zero branch, fast return' % task)
       self.ready_tasks.insert(0, task)
+      self._AssertTaskState(task, READY)
       self._LogTaskStats()
       return
     self.task_counters[task] = len(subtasks)
     # The branches are half-expanded, but don't complete the operation here
     # so that too many branches are opened.
     for subtask in reversed(subtasks):
-      self.branch_stack.append((task, subtask))
+      self.pending_stack.append((task, subtask))
 
   def _BeginTask(self, task, parent_task):
     if task in self.cache:
@@ -352,7 +354,7 @@ class TaskPool(object):
         self._ContinueTask(task, None)
 
   def _FinishTask(self, task, value):
-    assert task not in self.cache
+    self._AssertTaskState(task, RUNNING)
     try:
       task.Close()
     except RuntimeError:
@@ -365,25 +367,28 @@ class TaskPool(object):
       return
     self.cache[task] = (True, value)
     logging.debug('_FinishTask: %s: finished, returned: %s' % (task, value))
-    if task in self.task_waits:
-      for wait_task in self.task_waits[task]:
-        self._ResolveTask(wait_task)
-      del self.task_waits[task]
+    for wait_task in self.task_waits[task]:
+      self._ResolveTask(wait_task)
+    del self.task_waits[task]
+    self._AssertTaskState(task, FINISHED)
 
   def _ProcessTaskException(self, task, exc_info):
+    self._AssertTaskState(task, RUNNING)
     assert task not in self.cache
     self.cache[task] = (False, exc_info)
     logging.debug('_FinishTask: %s: exception raised: %s' %
                   (task, exc_info[0].__name__))
-    if task in self.task_waits:
-      for wait_task in self.task_waits[task]:
-        self._BailoutTask(wait_task)
-      del self.task_waits[task]
+    for wait_task in self.task_waits[task]:
+      self._BailoutTask(wait_task)
+    del self.task_waits[task]
+    self._AssertTaskState(task, ABORTED)
 
   def _BlockTask(self, task):
+    self._AssertTaskState(task, RUNNING)
     assert len(self.blocked_tasks) < self.parallelism
     self.task_counters[task] = 1
     self.blocked_tasks.insert(0, task)
+    self._AssertTaskState(task, BLOCKED)
     self._LogTaskStats()
     logging.debug('_BlockTask: %s: pushed to blocked_tasks' % task)
     self._WaitBlockedTasksUntilNotFull()
@@ -442,6 +447,7 @@ class TaskPool(object):
         # Serial execution or blocked task.
         self.ready_tasks.insert(0, task)
       del self.task_counters[task]
+      self._AssertTaskState(task, READY)
       logging.debug('_ResolveTask: %s: pushed to ready_task' % task)
       self._LogTaskStats()
 
@@ -457,6 +463,7 @@ class TaskPool(object):
       # Serial execution or blocked task.
       self.ready_tasks.insert(0, task)
     del self.task_counters[task]
+    self._AssertTaskState(task, READY)
     logging.debug('_BailoutTask: %s: pushed to ready_task' % task)
 
   def _Sleep(self):
@@ -467,6 +474,39 @@ class TaskPool(object):
     logging.info('Task statistics: %d ready, %d blocked, %d opened, %d pending' %
                  (len(self.ready_tasks), len(self.blocked_tasks),
                   len(self.task_waits), len(self.task_counters)))
+
+  def _AssertTaskState(self, task, state):
+    if state == RUNNING:
+      assert task not in self.cache
+      assert task not in self.task_graph
+      assert task not in self.task_counters
+      assert task is None or task in self.task_waits
+    elif state == WAITING:
+      assert task not in self.cache
+      assert task in self.task_graph
+      assert task in self.task_counters
+      assert task in self.task_waits
+    elif state == BLOCKED:
+      assert task not in self.cache
+      assert task not in self.task_graph
+      assert self.task_counters.get(task) == 1
+      assert task in self.task_waits
+    elif state == READY:
+      assert task not in self.cache
+      assert task not in self.task_counters
+      assert task is None or task in self.task_waits
+    elif state == FINISHED:
+      assert task in self.cache and self.cache[task][0]
+      assert task not in self.task_graph
+      assert task not in self.task_counters
+      assert task not in self.task_waits
+    elif state == ABORTED:
+      assert task in self.cache and not self.cache[task][0]
+      assert task not in self.task_graph
+      assert task not in self.task_counters
+      assert task not in self.task_waits
+    else:
+      raise AssertionError('Unknown state: ' + str(state))
 
 
 class TaskBranch(object):

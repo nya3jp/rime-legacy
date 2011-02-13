@@ -608,9 +608,10 @@ class FileBasedCode(Code):
         if not FileUtil.LocateBinary(name):
           yield RunResult("%s: %s" % (RunResult.PM, name), None)
       self.MakeOutDir()
-      yield (yield self._ExecForCompile(args=self.compile_args))
+      result = yield self._ExecForCompile(args=self.compile_args)
     except Exception, e:
-      yield RunResult(str(e), None)
+      result = RunResult(str(e), None)
+    yield result
 
   @taskgraph.GeneratorTask.FromFunction
   def Run(self, args, cwd, input, output, timeout, precise, redirect_error=False):
@@ -618,12 +619,13 @@ class FileBasedCode(Code):
     Run the code and return RunResult.
     """
     try:
-      yield (yield self._ExecForRun(
-          args=self.run_args+args, cwd=cwd,
-          input=input, output=output, timeout=timeout, precise=precise,
-          redirect_error=redirect_error))
+      result = yield self._ExecForRun(
+        args=self.run_args+args, cwd=cwd,
+        input=input, output=output, timeout=timeout, precise=precise,
+        redirect_error=redirect_error)
     except Exception, e:
-      yield RunResult(str(e), None)
+      result = RunResult(str(e), None)
+    yield result
 
   @taskgraph.GeneratorTask.FromFunction
   def Clean(self):
@@ -633,9 +635,10 @@ class FileBasedCode(Code):
     """
     try:
       FileUtil.RemoveTree(self.out_dir)
-      yield None
     except Exception, e:
       yield e
+    else:
+      yield None
 
   def ReadCompileLog(self):
     return FileUtil.ReadFile(os.path.join(self.out_dir, self.log_name))
@@ -751,11 +754,11 @@ class ScriptCode(FileBasedCode):
       self.MakeOutDir()
       FileUtil.CopyFile(os.path.join(self.src_dir, self.src_name),
                         os.path.join(self.out_dir, self.src_name))
-      yield RunResult(RunResult.OK, 0.0)
+      result = RunResult(RunResult.OK, 0.0)
     except Exception, e:
       FileUtil.WriteFile(str(e), os.path.join(self.out_dir, self.log_name))
-      yield RunResult(RunResult.RE, None)
-
+      result = RunResult(RunResult.RE, None)
+    yield result
 
 
 class DiffCode(Code):
@@ -864,7 +867,7 @@ class ConfigurableObject(object):
       try:
         attr = getattr(self, name)
         self._export_dict[attr.im_func._export_config] = attr
-      except:
+      except AttributeError:
         pass
     # Evaluate config.
     script = FileUtil.ReadFile(self.real_config_file)
@@ -2114,8 +2117,7 @@ class Rime(object):
     if not (ctx.options.precise or ctx.options.parallelism == 1):
       Console.Print("Note: Timings are not displayed when "
                     "concurrent processing is enabled.")
-      Console.Print("      To show them, try -p (--precise) or "
-                    "remove -j (--parallelism).")
+      Console.Print("      To show them, try -p (--precise).")
 
   def GetOptionParser(self):
     """
