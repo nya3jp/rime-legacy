@@ -104,39 +104,103 @@ class Bailout(Exception):
 class Task(object):
 
   def __hash__(self):
+    """
+    Hash function of Task. Usually users should override CacheKey() only.
+    """
     if self.CacheKey() is None:
       return id(self)
     return hash(self.CacheKey())
 
   def __eq__(self, other):
+    """
+    Equality function of Task. Usually users should override CacheKey() only.
+    """
     if not isinstance(other, Task):
       return False
     if self.CacheKey() is None and other.CacheKey() is None:
       return id(self) == id(other)
     return self.CacheKey() == other.CacheKey()
 
-  def IsExclusive(self):
-    return False
-
   def IsCacheable(self):
+    """
+    Checks if this task is cachable. Usually users should override CacheKey() only.
+    """
     return self.CacheKey() is not None
 
+  def IsExclusive(self):
+    """
+    Checks if this task is exclusive.
+
+    If a task is exclusive, it runs only when no other task is blocked.
+    """
+    return False
+
   def CacheKey(self):
+    """
+    Returns the cache key of this task.
+
+    Need to be overridden in subclasses. If this returns None, the task value is
+    never cached.
+    """
     raise NotImplementedError()
 
   def Continue(self, value=None):
+    """
+    Continues the task.
+
+    Implementations can return these type of values:
+    - TaskBranch: a list of tasks to be invoked next.
+    - TaskReturn: a value to be returned to the caller.
+    - TaskBlock: indicates this operation will block.
+    - Task: treated as TaskBranch(task).
+    - any other value: treated as TaskReturn(value).
+    In addition to these, it can raise an exception, including Bailout.
+
+    First invocation of this function will be with no parameter or None. If it
+    returns TaskBranch, next parameter will be a list of the results of the
+    specified tasks.
+    """
     raise NotImplementedError()
 
-  def Throw(self, exception):
+  def Throw(self, type, value=None, traceback=None):
+    """
+    Throws in an exception.
+
+    After Continue() or Throw() returned TaskBranch, if some of the branches
+    raised an exception, this function is called. Return value of this
+    function is treated in the same way as Continue().
+    """
     raise NotImplementedError()
 
   def Poll(self):
-    raise NotImplementedError()
+    """
+    Polls the blocked task.
+
+    If the operation is ready, return True. This function should return
+    immediately, and should not raise an exception.
+    """
+    return True
 
   def Wait(self):
-    raise NotImplementedError()
+    """
+    Polls the blocked task.
+
+    This function should wait until the operation gets ready. This function
+    should not raise an exception.
+    """
+    pass
 
   def Close(self):
+    """
+    Closes the task.
+
+    This is called once after Continue() or Throw() returned TaskReturn.
+    If they raised an exception, Close() is not called.
+    The task should release all resources associated with it, such as
+    running generators or opened processes.
+    If this function raises an exception, the value returned by Continue()
+    or Throw() is discarded.
+    """
     pass
 
 
@@ -165,7 +229,13 @@ class GeneratorTask(Task):
       return TaskReturn(None)
 
   def Close(self):
-    self.it.close()
+    try:
+      self.it.close()
+    except RuntimeError:
+      # Python2.5 raises RuntimeError when GeneratorExit is ignored. This often
+      # happens when yielding a return value from inside of try block, or even
+      # Ctrl+C was pressed when in try block.
+      pass
 
   @staticmethod
   def FromFunction(func):
@@ -202,6 +272,7 @@ class ExternalProcessTask(Task):
       del kwargs['exclusive']
     else:
       self.exclusive = False
+    self.timer = None
 
   def CacheKey(self):
     # Never cache.
@@ -239,13 +310,25 @@ class ExternalProcessTask(Task):
     assert self.proc is not None
     self.proc.wait()
 
+  def Close(self):
+    if self.timer is not None:
+      self.timer.cancel()
+      self.timer = None
+    if self.proc is not None:
+      try:
+        os.kill(self.proc.pid, signal.SIGKILL)
+      except:
+        pass
+      self.proc.wait()
+      self.proc = None
+
   def _StartProcess(self):
     self.start_time = time.time()
     self.proc = subprocess.Popen(*self.args, **self.kwargs)
     if self.timeout is not None:
       def TimeoutKiller():
         try:
-          os.kill(self.proc.pid, signal.SIGKILL)
+          os.kill(self.proc.pid, signal.SIGXCPU)
         except:
           pass
       self.timer = threading.Timer(self.timeout, TimeoutKiller)
@@ -320,8 +403,6 @@ class SerialTaskGraph(object):
           break
       try:
         task.Close()
-      except RuntimeError:
-        pass
       except:
         self.cache[task] = (False, sys.exc_info())
     if self.cache[task] is None:
@@ -426,9 +507,11 @@ class FiberTaskGraph(object):
     try:
       result = task.Continue(value)
     except:
-      result = _TaskRaise(*sys.exc_info())
-    logging.debug('_ContinueTask: %s: exited' % task)
-    self._ProcessTaskResult(task, result)
+      logging.debug('_ContinueTask: %s: exception raised' % task)
+      self._ProcessTaskException(task, sys.exc_info())
+    else:
+      logging.debug('_ContinueTask: %s: exited' % task)
+      self._ProcessTaskResult(task, result)
 
   def _ThrowTask(self, task, exc_info):
     assert self.task_state[task] == RUNNING
@@ -437,9 +520,11 @@ class FiberTaskGraph(object):
     try:
       result = task.Throw(*exc_info)
     except:
-      result = _TaskRaise(*sys.exc_info())
-    logging.debug('_ThrowTask: %s: exited' % task)
-    self._ProcessTaskResult(task, result)
+      logging.debug('_ThrowTask: %s: exception raised' % task)
+      self._ProcessTaskException(task, sys.exc_info())
+    else:
+      logging.debug('_ThrowTask: %s: exited' % task)
+      self._ProcessTaskResult(task, result)
 
   def _ProcessTaskResult(self, task, result):
     assert self.task_state[task] == RUNNING
@@ -456,13 +541,19 @@ class FiberTaskGraph(object):
     elif isinstance(result, TaskBlock):
       logging.debug('_ProcessTaskResult: %s: received TaskBlock' % task)
       self._BlockTask(task)
-    elif isinstance(result, _TaskRaise):
-      logging.debug('_ProcessTaskResult: %s: received exception' % task)
-      self._ExceptTask(task, result.exc_info)
     else:
       logging.debug('_ProcessTaskResult: %s: received unknown type,'
                     'implying TaskReturn' % task)
       self._FinishTask(task, result)
+
+  def _ProcessTaskException(self, task, exc_info):
+    assert self.task_state[task] == RUNNING
+    try:
+      task.Close()
+    except:
+      # Ignore the exception.
+      pass
+    self._ExceptTask(task, exc_info)
 
   def _BranchTask(self, task, subtasks):
     assert task is None or self.task_state[task] == RUNNING
@@ -514,11 +605,6 @@ class FiberTaskGraph(object):
     assert self.task_state[task] == RUNNING
     try:
       task.Close()
-    except RuntimeError:
-      # Python2.5 raises RuntimeError when GeneratorExit is ignored. This often
-      # happens when yielding a return value from inside of try block, or even
-      # Ctrl+C was pressed when in try block.
-      pass
     except:
       self._ExceptTask(task, sys.exc_info())
       return
@@ -583,21 +669,14 @@ class FiberTaskGraph(object):
     while i < len(self.blocked_tasks):
       task = self.blocked_tasks[i]
       assert self.task_state[task] == BLOCKED
-      try:
-        success = task.Poll()
-      except:
-        self._ExceptTask(task, sys.exc_info())
+      success = task.Poll()
+      if success:
+        self._ResolveTask(task)
         resolved += 1
         self.blocked_tasks.pop(i)
         self._LogTaskStats()
       else:
-        if success:
-          self._ResolveTask(task)
-          resolved += 1
-          self.blocked_tasks.pop(i)
-          self._LogTaskStats()
-        else:
-          i += 1
+        i += 1
     return resolved
 
   def _ResolveTask(self, task):
@@ -640,9 +719,11 @@ class FiberTaskGraph(object):
     time.sleep(0.01)
 
   def _LogTaskStats(self):
-    logging.info('Task statistics: %d ready, %d blocked, %d opened, %d pending' %
-                 (len(self.ready_tasks), len(self.blocked_tasks),
-                  len(self.task_waits), len(self.task_counters)))
+    stats = [0] * 6
+    for state in self.task_state.values():
+      stats[state] += 1
+    logging.info(('RUNNING %d, WAITING %d, BLOCKED %d, '
+                  'READY %d, FINISHED %d, ABORTED %d') % tuple(stats))
 
   def _SetTaskState(self, task, state):
     if state == RUNNING:
@@ -965,7 +1046,7 @@ class Console(object):
     if log is None:
       return
     for line in log.splitlines():
-      cls.Print("> ", line)
+      cls.Print(line)
 
 # Call Init() on load time.
 Console.Init()
@@ -1290,7 +1371,7 @@ class FileBasedCode(Code):
     proc = yield task
     code = proc.returncode
     # Retry if TLE.
-    if not precise and code == -(signal.SIGKILL):
+    if not precise and code == -(signal.SIGXCPU):
       self._ResetIO(stdin, stdout, stderr)
       task = ExternalProcessTask(
         args, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, timeout=timeout,
@@ -1299,7 +1380,7 @@ class FileBasedCode(Code):
       code = proc.returncode
     if code == 0:
       status = RunResult.OK
-    elif code == -(signal.SIGKILL):
+    elif code == -(signal.SIGXCPU):
       status = RunResult.TLE
     elif code < 0:
       status = RunResult.RE
@@ -2565,7 +2646,7 @@ class Solution(BuildableObject):
       Console.PrintLog(log)
       yield False
     if log:
-      ctx.errors.Warning(self, "Compiler warnings found")
+      Console.Print("Compiler warnings found:")
       Console.PrintLog(log)
     if not self.SetCacheStamp(ctx):
       yield False
@@ -2619,6 +2700,7 @@ class Rime(object):
       self.PrintHelp()
       return 0
     ctx = RimeContext(options)
+    self._SetupDebugOptions(ctx)
     # Check system.
     if not self._CheckSystem(ctx):
       return 1
@@ -2664,6 +2746,10 @@ class Rime(object):
       else:
         Console.PrintError("Unknown command: %s" % cmd)
         return 1
+    except KeyboardInterrupt:
+      if ctx.options.debug >= 1:
+        traceback.print_exc()
+      raise
     finally:
       graph.Close()
     Console.Print()
@@ -2803,6 +2889,15 @@ class Rime(object):
       Console.Print("Note: Running Rime under Windows will be unstable.")
     return True
 
+  def _SetupDebugOptions(self, ctx):
+    """
+    Set up debug options.
+    """
+    if ctx.options.debug >= 3:
+      logging.basicConfig(level=logging.DEBUG)
+    elif ctx.options.debug >= 2:
+      logging.basicConfig(level=logging.INFO)
+
 
 def main():
   try:
@@ -2823,6 +2918,4 @@ def main():
 
 
 if __name__ == '__main__':
-  #logging.basicConfig(level=logging.INFO)
   main()
-
