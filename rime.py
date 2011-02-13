@@ -27,6 +27,8 @@
 from __future__ import with_statement
 
 import datetime
+import itertools
+import logging
 import optparse
 import os
 import pickle
@@ -39,6 +41,9 @@ import threading
 import time
 import traceback
 
+# TODO(nya): import this directly
+import taskgraph
+
 
 HELP_MESSAGE = """\
 Usage: rime.py COMMAND [OPTIONS] [DIR]
@@ -50,9 +55,11 @@ Commands:
   help      show this help message and exit
 
 Options:
-  -h, --help         show this help message and exit
-  -C, --cache-tests  cache test results
-  -d, --debug        print debug messages
+  -h, --help             show this help message and exit
+  -j, --parallelism=num  run processes in parallel
+  -p, --precise          don't run timing tasks concurrently
+  -C, --cache-tests      cache test results
+  -d, --debug            print debug messages
 """
 
 
@@ -472,11 +479,13 @@ class TestResult(object):
     self.ruling_file = None
     self.cached = False
 
-  def IsTimeStatsAvailable(self):
+  def IsTimeStatsAvailable(self, ctx):
     """
     Checks if time statistics are available.
     """
-    return (self.files and all([c.verdict == TestResult.AC for c in self.cases.values()]))
+    return ((ctx.options.precise or ctx.options.parallelism == 1) and
+            self.files and
+            all([c.verdict == TestResult.AC for c in self.cases.values()]))
 
   def GetTimeStats(self):
     """
@@ -554,7 +563,7 @@ class Code(object):
   def Compile(self):
     raise NotImplementedError()
 
-  def Run(self, args, cwd, input, output, timeout, redirect_error=False):
+  def Run(self, args, cwd, input, output, timeout, precise, redirect_error=False):
     raise NotImplementedError()
 
   def Clean(self):
@@ -588,6 +597,7 @@ class FileBasedCode(Code):
     """
     FileUtil.MakeDir(self.out_dir)
 
+  @taskgraph.GeneratorTask.FromFunction
   def Compile(self):
     """
     Compile the code and return (RunResult, log) pair.
@@ -595,24 +605,26 @@ class FileBasedCode(Code):
     try:
       for name in self.prereqs:
         if not FileUtil.LocateBinary(name):
-          return RunResult("%s: %s" % (RunResult.PM, name), None)
+          yield RunResult("%s: %s" % (RunResult.PM, name), None)
       self.MakeOutDir()
-      return self._ExecForCompile(args=self.compile_args)
+      yield (yield self._ExecForCompile(args=self.compile_args))
     except Exception, e:
-      return RunResult(str(e), None)
+      yield RunResult(str(e), None)
 
-  def Run(self, args, cwd, input, output, timeout, redirect_error=False):
+  @taskgraph.GeneratorTask.FromFunction
+  def Run(self, args, cwd, input, output, timeout, precise, redirect_error=False):
     """
     Run the code and return RunResult.
     """
     try:
-      return self._ExecForRun(
-        args=self.run_args+args, cwd=cwd,
-        input=input, output=output, timeout=timeout,
-        redirect_error=redirect_error)
+      yield (yield self._ExecForRun(
+          args=self.run_args+args, cwd=cwd,
+          input=input, output=output, timeout=timeout, precise=precise,
+          redirect_error=redirect_error))
     except Exception, e:
-      return RunResult(str(e), None)
+      yield RunResult(str(e), None)
 
+  @taskgraph.GeneratorTask.FromFunction
   def Clean(self):
     """
     Clean the output directory.
@@ -620,42 +632,49 @@ class FileBasedCode(Code):
     """
     try:
       FileUtil.RemoveTree(self.out_dir)
-      return None
+      yield None
     except Exception, e:
-      return e
-
-  def _ExecForCompile(self, args):
-    with open(os.path.join(self.out_dir, self.log_name), 'w') as outfile:
-      return self._ExecInternal(
-        args=args, cwd=self.src_dir,
-        stdin=FileUtil.OpenNull(), stdout=outfile, stderr=subprocess.STDOUT)
+      yield e
 
   def ReadCompileLog(self):
     return FileUtil.ReadFile(os.path.join(self.out_dir, self.log_name))
 
-  def _ExecForRun(self, args, cwd, input, output, timeout, redirect_error):
+  @taskgraph.GeneratorTask.FromFunction
+  def _ExecForCompile(self, args):
+    with open(os.path.join(self.out_dir, self.log_name), 'w') as outfile:
+      yield (yield self._ExecInternal(
+          args=args, cwd=self.src_dir,
+          stdin=FileUtil.OpenNull(), stdout=outfile, stderr=subprocess.STDOUT))
+
+  @taskgraph.GeneratorTask.FromFunction
+  def _ExecForRun(self, args, cwd, input, output, timeout, precise,
+                  redirect_error=False):
     with open(input, 'r') as infile:
       with open(output, 'w') as outfile:
         if redirect_error:
           errfile = subprocess.STDOUT
         else:
           errfile = FileUtil.OpenNull()
-        return self._ExecInternal(
-          args=args, cwd=cwd,
-          stdin=infile, stdout=outfile, stderr=errfile, timeout=timeout)
+        yield (yield self._ExecInternal(
+            args=args, cwd=cwd,
+            stdin=infile, stdout=outfile, stderr=errfile, timeout=timeout,
+            precise=precise))
 
-  def _ExecInternal(self, args, cwd, stdin, stdout, stderr, timeout=None):
-    start_time = time.time()
-    p = subprocess.Popen(args, cwd=cwd,
-                         stdin=stdin, stdout=stdout, stderr=stderr)
-    if timeout is not None:
-      timer = threading.Timer(timeout,
-                              lambda: os.kill(p.pid, signal.SIGKILL))
-      timer.start()
-    code = p.wait()
-    end_time = time.time()
-    if timeout is not None:
-      timer.cancel()
+  @taskgraph.GeneratorTask.FromFunction
+  def _ExecInternal(self, args, cwd, stdin, stdout, stderr,
+                    timeout=None, precise=False):
+    task = taskgraph.ExternalProcessTask(
+      args, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, timeout=timeout,
+      exclusive=precise)
+    proc = yield task
+    code = proc.returncode
+    # Retry if TLE.
+    if not precise and code == -(signal.SIGKILL):
+      task = taskgraph.ExternalProcessTask(
+        args, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, timeout=timeout,
+        exclusive=True)
+      proc = yield task
+      code = proc.returncode
     if code == 0:
       status = RunResult.OK
     elif code == -(signal.SIGKILL):
@@ -664,7 +683,7 @@ class FileBasedCode(Code):
       status = RunResult.RE
     else:
       status = RunResult.NG
-    return RunResult(status, end_time-start_time)
+    yield RunResult(status, task.time)
 
 
 
@@ -675,10 +694,10 @@ class CCode(FileBasedCode):
       src_name=src_name, src_dir=src_dir, out_dir=out_dir,
       prereqs=['gcc'])
     self.exe_name = os.path.splitext(src_name)[0] + FileNames.EXE_EXT
-    self.compile_args = ['gcc',
-                         '-o', os.path.join(out_dir, self.exe_name),
-                         src_name] + flags
-    self.run_args = [os.path.join(out_dir, self.exe_name)]
+    self.compile_args = tuple(['gcc',
+                               '-o', os.path.join(out_dir, self.exe_name),
+                               src_name] + flags)
+    self.run_args = tuple([os.path.join(out_dir, self.exe_name)])
 
 
 
@@ -689,10 +708,10 @@ class CXXCode(FileBasedCode):
       src_name=src_name, src_dir=src_dir, out_dir=out_dir,
       prereqs=['g++'])
     self.exe_name = os.path.splitext(src_name)[0] + FileNames.EXE_EXT
-    self.compile_args = ['g++',
-                         '-o', os.path.join(out_dir, self.exe_name),
-                         src_name] + flags
-    self.run_args = [os.path.join(out_dir, self.exe_name)]
+    self.compile_args = tuple(['g++',
+                               '-o', os.path.join(out_dir, self.exe_name),
+                               src_name] + flags)
+    self.run_args = tuple([os.path.join(out_dir, self.exe_name)])
 
 
 
@@ -705,12 +724,12 @@ class JavaCode(FileBasedCode):
       prereqs=['javac', 'java'])
     self.encoding = encoding
     self.mainclass = mainclass
-    self.compile_args = (['javac', '-encoding', encoding,
-                          '-d', FileUtil.ConvPath(out_dir)] +
-                         compile_flags + [src_name])
-    self.run_args = (['java', '-Dline.separator=\n',
-                      '-cp', FileUtil.ConvPath(out_dir)] +
-                     run_flags + [mainclass])
+    self.compile_args = tuple(['javac', '-encoding', encoding,
+                               '-d', FileUtil.ConvPath(out_dir)] +
+                              compile_flags + [src_name])
+    self.run_args = tuple(['java', '-Dline.separator=\n',
+                           '-cp', FileUtil.ConvPath(out_dir)] +
+                          run_flags + [mainclass])
 
 
 
@@ -723,17 +742,18 @@ class ScriptCode(FileBasedCode):
       src_name=src_name, src_dir=src_dir, out_dir=out_dir,
       prereqs=[interpreter])
     self.interpreter = interpreter
-    self.run_args = [interpreter, os.path.join(out_dir, src_name)]
+    self.run_args = tuple([interpreter, os.path.join(out_dir, src_name)])
 
+  @taskgraph.GeneratorTask.FromFunction
   def Compile(self):
     try:
       self.MakeOutDir()
       FileUtil.CopyFile(os.path.join(self.src_dir, self.src_name),
                         os.path.join(self.out_dir, self.src_name))
-      return RunResult(RunResult.OK, 0.0)
+      yield RunResult(RunResult.OK, 0.0)
     except Exception, e:
       FileUtil.WriteFile(str(e), os.path.join(self.out_dir, self.log_name))
-      return RunResult(RunResult.RE, None)
+      yield RunResult(RunResult.RE, None)
 
 
 
@@ -745,37 +765,43 @@ class DiffCode(Code):
     super(DiffCode, self).__init__()
     self.log_name = 'diff.log'
 
+  @taskgraph.GeneratorTask.FromFunction
   def Compile(self):
     if not FileUtil.LocateBinary('diff'):
-      return RunResult("%s: diff" % RunResult.PM, None)
-    return RunResult(RunResult.OK, 0.0)
+      yield RunResult("%s: diff" % RunResult.PM, None)
+    yield RunResult(RunResult.OK, 0.0)
 
-  def Run(self, args, cwd, input, output, timeout, redirect_error=False):
+  @taskgraph.GeneratorTask.FromFunction
+  def Run(self, args, cwd, input, output, timeout, precise, redirect_error=False):
     parser = optparse.OptionParser()
     parser.add_option('-i', '--infile', dest='infile')
     parser.add_option('-d', '--difffile', dest='difffile')
     parser.add_option('-o', '--outfile', dest='outfile')
-    (options, pos_args) = parser.parse_args([''] + args)
-    run_args = ['diff', '-u', options.difffile, options.outfile]
+    (options, pos_args) = parser.parse_args([''] + list(args))
+    run_args = ('diff', '-u', options.difffile, options.outfile)
     with open(input, 'r') as infile:
       with open(output, 'w') as outfile:
         if redirect_error:
           errfile = subprocess.STDOUT
         else:
           errfile = FileUtil.OpenNull()
+        task = taskgraph.ExternalProcessTask(
+          run_args, cwd=cwd, stdin=infile, stdout=outfile, stderr=errfile,
+          timeout=timeout)
         try:
-          ret = subprocess.call(run_args, cwd=cwd,
-                                stdin=infile, stdout=outfile, stderr=errfile)
+          proc = yield task
         except OSError:
-          return RunResult(RunResult.RE, None)
+          yield RunResult(RunResult.RE, None)
+        ret = proc.returncode
         if ret == 0:
-          return RunResult(RunResult.OK, 0.0)
+          yield RunResult(RunResult.OK, task.time)
         if ret > 0:
-          return RunResult(RunResult.NG, None)
-        return RunResult(RunResult.RE, None)
+          yield RunResult(RunResult.NG, None)
+        yield RunResult(RunResult.RE, None)
 
+  @taskgraph.GeneratorTask.FromFunction
   def Clean(self):
-    return True
+    yield True
 
 
 class ConfigurableObject(object):
@@ -1014,44 +1040,41 @@ class RimeRoot(ConfigurableObject):
         return obj
     return None
 
+  @taskgraph.GeneratorTask.FromFunction
   def Build(self, ctx):
     """
     Build all.
     """
-    success = True
-    for problem in self.problems:
-      if not problem.Build(ctx):
-        success = False
-    return success
+    results = yield taskgraph.TaskBranch(
+      [problem.Build(ctx) for problem in self.problems])
+    yield all(results)
 
+  @taskgraph.GeneratorTask.FromFunction
   def Test(self, ctx):
     """
     Test all.
     """
-    results = []
-    for problem in self.problems:
-      results.extend(problem.Test(ctx))
-    return results
+    results = yield taskgraph.TaskBranch(
+      [problem.Test(ctx) for problem in self.problems])
+    yield list(itertools.chain(*results))
 
+  @taskgraph.GeneratorTask.FromFunction
   def Pack(self, ctx):
     """
     Pack all.
     """
-    success = True
-    for problem in self.problems:
-      if not problem.Pack(ctx):
-        success = False
-    return success
+    results = yield taskgraph.TaskBranch(
+      [problem.Pack(ctx) for problem in self.problems])
+    yield all(results)
 
+  @taskgraph.GeneratorTask.FromFunction
   def Clean(self, ctx):
     """
     Clean all.
     """
-    success = True
-    for problem in self.problems:
-      if not problem.Clean(ctx):
-        success = False
-    return success
+    results = yield taskgraph.TaskBranch(
+      [problem.Clean(ctx) for problem in self.problems])
+    yield all(results)
 
 
 
@@ -1128,30 +1151,31 @@ class Problem(BuildableObject):
         return obj
     return self.tests.FindByBaseDir(base_dir)
 
+  @taskgraph.GeneratorTask.FromFunction
   def Build(self, ctx):
     """
     Build all solutions and tests.
     """
-    success = True
-    for solution in self.solutions:
-      if not solution.Build(ctx):
-        success = False
-    if not self.tests.Build(ctx):
-      success = False
-    return success
+    results = yield taskgraph.TaskBranch(
+      [solution.Build(ctx) for solution in self.solutions] +
+      [self.tests.Build(ctx)])
+    yield all(results)
 
+  @taskgraph.GeneratorTask.FromFunction
   def Test(self, ctx):
     """
     Run tests.
     """
-    return self.tests.Test(ctx)
+    yield (yield self.tests.Test(ctx))
 
+  @taskgraph.GeneratorTask.FromFunction
   def Pack(self, ctx):
     """
     Pack tests.
     """
-    return self.tests.Pack(ctx)
+    yield (yield self.tests.Pack(ctx))
 
+  @taskgraph.GeneratorTask.FromFunction
   def Clean(self, ctx):
     """
     Clean all solutions and tests.
@@ -1164,7 +1188,7 @@ class Problem(BuildableObject):
       except:
         ctx.errors.Exception(self)
         success = False
-    return success
+    yield success
 
 
 
@@ -1205,34 +1229,34 @@ class Tests(BuildableObject):
     if self.problem.reference_solution:
       self._AddDependency(self.problem.reference_solution)
 
+  @taskgraph.GeneratorTask.FromFunction
   def Build(self, ctx):
     """
     Build tests.
     """
     if self.IsBuildCached():
-      return True
+      yield True
     if not self._InitOutputDir(ctx):
-      return False
-    if not self._CompileGenerator(ctx):
-      return False
-    if not self._CompileValidator(ctx):
-      return False
-    if not self._CompileJudge(ctx):
-      return False
-    if not self._RunGenerator(ctx):
-      return False
-    if not self._RunValidator(ctx):
-      return False
+      yield False
+    if not all((yield taskgraph.TaskBranch([
+            self._CompileGenerator(ctx),
+            self._CompileValidator(ctx),
+            self._CompileJudge(ctx)]))):
+      yield False
+    if not (yield self._RunGenerator(ctx)):
+      yield False
+    if not (yield self._RunValidator(ctx)):
+      yield False
     if self.ListInputFiles():
-      if not self._CompileReferenceSolution(ctx):
-        return False
-      if not self._RunReferenceSolution(ctx):
-        return False
-      if not self._GenerateConcatTest(ctx):
-        return False
+      if not (yield self._CompileReferenceSolution(ctx)):
+        yield False
+      if not (yield self._RunReferenceSolution(ctx)):
+        yield False
+      if not (yield self._GenerateConcatTest(ctx)):
+        yield False
     if not self.SetCacheStamp(ctx):
-      return False
-    return True
+      yield False
+    yield True
 
   def _InitOutputDir(self, ctx):
     """
@@ -1246,51 +1270,82 @@ class Tests(BuildableObject):
       ctx.errors.Exception(self)
       return False
 
+  @taskgraph.GeneratorTask.FromFunction
   def _CompileGenerator(self, ctx):
     """
     Compile all input generators.
     """
-    for generator in self.generators:
-      if not generator.QUIET_COMPILE:
-        Console.PrintAction("COMPILE", self, generator.src_name)
-      res = generator.Compile()
-      if res.status != RunResult.OK:
-        ctx.errors.Error(self,
-                         "%s: Compile Error (%s)" % (generator.src_name, res.status))
-        Console.PrintLog(generator.ReadCompileLog())
-        return False
-    return True
+    results = yield taskgraph.TaskBranch([
+        self._CompileGeneratorOne(generator, ctx)
+        for generator in self.generators])
+    yield all(results)
 
+  @taskgraph.GeneratorTask.FromFunction
+  def _CompileGeneratorOne(self, generator, ctx):
+    """
+    Compile a single input generator.
+    """
+    if not generator.QUIET_COMPILE:
+      Console.PrintAction("COMPILE", self, generator.src_name)
+    res = yield generator.Compile()
+    if res.status != RunResult.OK:
+      ctx.errors.Error(self,
+                       "%s: Compile Error (%s)" % (generator.src_name, res.status))
+      Console.PrintLog(generator.ReadCompileLog())
+      raise taskgraph.Bailout([False])
+    yield True
+
+  @taskgraph.GeneratorTask.FromFunction
   def _RunGenerator(self, ctx):
     """
     Run all input generators.
     """
-    for generator in self.generators:
-      Console.PrintAction("GENERATE", self, generator.src_name)
-      res = generator.Run(
-        args=[], cwd=self.out_dir,
-        input=os.devnull, output=os.devnull, timeout=None)
-      if res.status != RunResult.OK:
-        ctx.errors.Error(self,
-                         "%s: %s" % (generator.src_name, res.status))
-        return False
-    return True
+    results = yield taskgraph.TaskBranch([
+        self._RunGeneratorOne(generator, ctx)
+        for generator in self.generators])
+    yield all(results)
 
+  @taskgraph.GeneratorTask.FromFunction
+  def _RunGeneratorOne(self, generator, ctx):
+    """
+    Run a single input generator.
+    """
+    Console.PrintAction("GENERATE", self, generator.src_name)
+    res = yield generator.Run(
+      args=(), cwd=self.out_dir,
+      input=os.devnull, output=os.devnull, timeout=None, precise=False)
+    if res.status != RunResult.OK:
+      ctx.errors.Error(self,
+                       "%s: %s" % (generator.src_name, res.status))
+      raise taskgraph.Bailout([False])
+    yield True
+
+  @taskgraph.GeneratorTask.FromFunction
   def _CompileValidator(self, ctx):
     """
     Compile input validators.
     """
-    for validator in self.validators:
-      if not validator.QUIET_COMPILE:
-        Console.PrintAction("COMPILE", self, validator.src_name)
-      res = validator.Compile()
-      if res.status != RunResult.OK:
-        ctx.errors.Error(self,
-                         "%s: Compile Error (%s)" % (validator.src_name, res.status))
-        Console.PrintLog(validator.ReadCompileLog())
-        return False
-    return True
+    results = yield taskgraph.TaskBranch([
+        self._CompileValidatorOne(validator, ctx)
+        for validator in self.validators])
+    yield all(results)
 
+  @taskgraph.GeneratorTask.FromFunction
+  def _CompileValidatorOne(self, validator, ctx):
+    """
+    Compile a single input validator.
+    """
+    if not validator.QUIET_COMPILE:
+      Console.PrintAction("COMPILE", self, validator.src_name)
+    res = yield validator.Compile()
+    if res.status != RunResult.OK:
+      ctx.errors.Error(self,
+                       "%s: Compile Error (%s)" % (validator.src_name, res.status))
+      Console.PrintLog(validator.ReadCompileLog())
+      raise taskgraph.Bailout([False])
+    yield True
+
+  @taskgraph.GeneratorTask.FromFunction
   def _RunValidator(self, ctx):
     """
     Run input validators.
@@ -1298,52 +1353,62 @@ class Tests(BuildableObject):
     if not self.validators:
       Console.PrintAction("VALIDATE", self, "skipping: validator unavailable")
       ctx.errors.Warning(self, "Validator Unavailable")
-      return True
-    for validator in self.validators:
-      Console.PrintAction("VALIDATE", self, progress=True)
-      infiles = self.ListInputFiles()
-      for (i, infile) in enumerate(infiles):
-        Console.PrintAction(
-          "VALIDATE", self,
-          "[%d/%d] %s" % (i+1, len(infiles), infile),
-          progress=True)
-        validationfile = os.path.splitext(infile)[0] + FileNames.VALIDATION_EXT
-        res = validator.Run(
-          args=[], cwd=self.out_dir,
-          input=os.path.join(self.out_dir, infile),
-          output=os.path.join(self.out_dir, validationfile),
-          timeout=None,
-          redirect_error=True)
-        if res.status == RunResult.NG:
-          ctx.errors.Error(self,
-                           "%s: Validation Failed" % infile)
-          log = FileUtil.ReadFile(os.path.join(self.out_dir, validationfile))
-          Console.PrintLog(log)
-          return False
-        elif res.status != RunResult.OK:
-          ctx.errors.Error(self,
-                           "%s: Validator Failed: %s" % (infile, res.status))
-          return False
-      Console.PrintAction("VALIDATE", self, "OK")
-    return True
+      yield True
+    infiles = self.ListInputFiles()
+    results = yield taskgraph.TaskBranch([
+        self._RunValidatorOne(validator, infile, ctx)
+        for validator in self.validators
+        for infile in infiles])
+    if not all(results):
+      yield False
+    Console.PrintAction("VALIDATE", self, "OK")
+    yield True
 
+  @taskgraph.GeneratorTask.FromFunction
+  def _RunValidatorOne(self, validator, infile, ctx):
+    """
+    Run an input validator against a single input file.
+    """
+    #Console.PrintAction("VALIDATE", self,
+    #                    "%s" % infile, progress=True)
+    validationfile = os.path.splitext(infile)[0] + FileNames.VALIDATION_EXT
+    res = yield validator.Run(
+      args=(), cwd=self.out_dir,
+      input=os.path.join(self.out_dir, infile),
+      output=os.path.join(self.out_dir, validationfile),
+      timeout=None, precise=False,
+      redirect_error=True)
+    if res.status == RunResult.NG:
+      ctx.errors.Error(self,
+                       "%s: Validation Failed" % infile)
+      log = FileUtil.ReadFile(os.path.join(self.out_dir, validationfile))
+      Console.PrintLog(log)
+      raise taskgraph.Bailout([False])
+    elif res.status != RunResult.OK:
+      ctx.errors.Error(self,
+                       "%s: Validator Failed: %s" % (infile, res.status))
+      raise taskgraph.Bailout([False])
+    Console.PrintAction("VALIDATE", self,
+                        "%s: PASSED" % infile, progress=True)
+    yield True
+
+  @taskgraph.GeneratorTask.FromFunction
   def _CompileJudge(self, ctx):
     """
     Compile judge.
     """
     if self.judge is None:
-      return True
+      yield True
     if not self.judge.QUIET_COMPILE:
-      Console.PrintAction("COMPILE",
-                          self,
-                          self.judge.src_name)
-    res = self.judge.Compile()
+      Console.PrintAction("COMPILE", self, self.judge.src_name)
+    res = yield self.judge.Compile()
     if res.status != RunResult.OK:
       ctx.errors.Error(self, "%s: Compile Error (%s)" % (self.judge.src_name, res.status))
       Console.PrintLog(self.judge.ReadCompileLog())
-      return False
-    return True
+      yield False
+    yield True
 
+  @taskgraph.GeneratorTask.FromFunction
   def _CompileReferenceSolution(self, ctx):
     """
     Compile the reference solution.
@@ -1351,9 +1416,10 @@ class Tests(BuildableObject):
     reference_solution = self.problem.reference_solution
     if reference_solution is None:
       ctx.errors.Error(self, "Reference solution is not available")
-      return False
-    return reference_solution.Build(ctx)
+      yield False
+    yield (yield reference_solution.Build(ctx))
 
+  @taskgraph.GeneratorTask.FromFunction
   def _RunReferenceSolution(self, ctx):
     """
     Run the reference solution to generate reference outputs.
@@ -1361,32 +1427,42 @@ class Tests(BuildableObject):
     reference_solution = self.problem.reference_solution
     if reference_solution is None:
       ctx.errors.Error(self, "Reference solution is not available")
-      return False
-    Console.PrintAction("REFRUN", reference_solution, progress=True)
+      yield False
     infiles = self.ListInputFiles()
-    for (i, infile) in enumerate(infiles):
-      difffile = os.path.splitext(infile)[0] + FileNames.DIFF_EXT
-      if os.path.isfile(os.path.join(self.out_dir, difffile)):
-        continue
-      Console.PrintAction(
-        "REFRUN", reference_solution,
-        "[%d/%d] %s" % (i+1, len(infiles), infile),
-        progress=True)
-      res = reference_solution.Run(
-        args=[], cwd=self.out_dir,
-        input=os.path.join(self.out_dir, infile),
-        output=os.path.join(self.out_dir, difffile),
-        timeout=None)
-      if res.status != RunResult.OK:
-        ctx.errors.Error(reference_solution, res.status)
-        return False
-    Console.PrintAction(
-      "REFRUN", reference_solution)
-    return True
+    results = yield taskgraph.TaskBranch([
+        self._RunReferenceSolutionOne(reference_solution, infile, ctx)
+        for infile in infiles])
+    if not all(results):
+      yield False
+    Console.PrintAction("REFRUN", reference_solution)
+    yield True
 
+  @taskgraph.GeneratorTask.FromFunction
+  def _RunReferenceSolutionOne(self, reference_solution, infile, ctx):
+    """
+    Run the reference solution against a single input file.
+    """
+    difffile = os.path.splitext(infile)[0] + FileNames.DIFF_EXT
+    if os.path.isfile(os.path.join(self.out_dir, difffile)):
+      yield True
+    #Console.PrintAction("REFRUN", reference_solution,
+    #                    "%s" % infile, progress=True)
+    res = yield reference_solution.Run(
+      args=(), cwd=self.out_dir,
+      input=os.path.join(self.out_dir, infile),
+      output=os.path.join(self.out_dir, difffile),
+      timeout=None, precise=False)
+    if res.status != RunResult.OK:
+      ctx.errors.Error(reference_solution, res.status)
+      raise taskgraph.Bailout([False])
+    Console.PrintAction("REFRUN", reference_solution,
+                        "%s: DONE" % infile, progress=True)
+    yield True
+
+  @taskgraph.GeneratorTask.FromFunction
   def _GenerateConcatTest(self, ctx):
     if not self.concat_test:
-      return True
+      yield True
     Console.PrintAction("GENERATE", self, progress=True)
     concat_infile = FileNames.CONCAT_INFILE
     concat_difffile = FileNames.CONCAT_DIFFFILE
@@ -1418,48 +1494,50 @@ class Tests(BuildableObject):
         concat_difffile,
         os.path.getsize(os.path.join(self.out_dir, concat_difffile)),
         ))
-    return True
+    yield True
 
+  @taskgraph.GeneratorTask.FromFunction
   def Test(self, ctx):
     """
     Test all solutions.
     """
-    if not self.Build(ctx):
-      return []
-    results = []
-    for solution in self.problem.solutions:
-      results.extend(self.TestSolution(solution, ctx))
-    return results
+    if not (yield self.Build(ctx)):
+      yield []
+    results = yield taskgraph.TaskBranch([
+        self.TestSolution(solution, ctx)
+        for solution in self.problem.solutions])
+    yield list(itertools.chain(*results))
 
+  @taskgraph.GeneratorTask.FromFunction
   def TestSolution(self, solution, ctx):
     """
     Test a single solution.
     """
     # Note: though Tests.Test() executes Tests.Build(), it is also
     # required here because Solution.Test() calls this function directly.
-    if not self.Build(ctx):
+    if not (yield self.Build(ctx)):
       result = TestResult(self.problem, solution, [])
       result.good = False
       result.passed = False
       result.detail = "Failed to build tests"
-      return [result]
-    if not solution.Build(ctx):
+      yield [result]
+    if not (yield solution.Build(ctx)):
       result = TestResult(self.problem, solution, [])
       result.good = False
       result.passed = False
       result.detail = "Compile Error"
-      return [result]
+      yield [result]
     Console.PrintAction("TEST", solution, progress=True)
     if not solution.IsCorrect() and solution.challenge_cases:
-      result = self._TestSolutionWithChallengeCases(solution, ctx)
+      result = yield self._TestSolutionWithChallengeCases(solution, ctx)
     else:
-      result = self._TestSolutionWithAllCases(solution, ctx)
+      result = yield self._TestSolutionWithAllCases(solution, ctx)
     if result.good and result.passed:
       assert not result.detail
-      if result.IsTimeStatsAvailable():
+      if result.IsTimeStatsAvailable(ctx):
         result.detail = result.GetTimeStats()
       else:
-        result.detail = "(no test)"
+        result.detail = "(*/*)"
     else:
       assert result.detail
     status_row = []
@@ -1477,15 +1555,15 @@ class Tests(BuildableObject):
       judgefile = os.path.splitext(result.ruling_file)[0] + FileNames.JUDGE_EXT
       log = FileUtil.ReadFile(os.path.join(solution.out_dir, judgefile))
       Console.PrintLog(log)
-    return [result]
+    yield [result]
 
+  @taskgraph.GeneratorTask.FromFunction
   def _TestSolutionWithChallengeCases(self, solution, ctx):
     """
     Test a wrong solution which has explicitly-specified challenge cases.
     """
     infiles = self.ListInputFiles()
     challenge_cases = self._SortInputFiles(solution.challenge_cases)
-    cookie = solution.GetCacheStamp()
     result = TestResult(self.problem, solution, challenge_cases)
     # Ensure all challenge cases exist.
     all_exists = True
@@ -1498,84 +1576,106 @@ class Tests(BuildableObject):
       result.good = False
       result.passed = False
       result.detail = "Challenge case not found"
-      return result
+      yield result
     # Try challenge cases.
-    for (i, infile) in enumerate(challenge_cases):
-      Console.PrintAction(
-        "TEST", solution,
-        "[%d/%d] %s" % (i+1, len(challenge_cases), infile),
-        progress=True)
-      (verdict, time, cached) = self._TestOneCase(
-        solution, infile, cookie, ctx)
-      if cached:
-        result.cached = True
-      result.cases[infile].verdict = verdict
-      if verdict == TestResult.AC:
-        result.ruling_file = infile
-        result.good = False
-        result.passed = True
-        result.detail = "%s: Unexpectedly Accepted" % infile
-        ctx.errors.Error(solution, result.detail, quiet=True)
-        break
-      elif verdict not in (TestResult.WA, TestResult.TLE, TestResult.RE):
-        result.ruling_file = infile
-        result.good = False
-        result.passed = False
-        result.detail = "%s: Judge Error" % infile
-        ctx.errors.Error(solution, result.detail, quiet=True)
-        break
+    yield taskgraph.TaskBranch([
+        self._TestSolutionWithChallengeCasesOne(solution, infile, result, ctx)
+        for infile in challenge_cases])
     if result.good is None:
       result.good = True
       result.passed = False
       result.detail = "Expectedly Failed"
-    return result
+    yield result
 
+  @taskgraph.GeneratorTask.FromFunction
+  def _TestSolutionWithChallengeCasesOne(self, solution, infile, result, ctx):
+    """
+    Test a wrong solution which has explicitly-specified challenge cases.
+    """
+    #Console.PrintAction("TEST", solution,
+    #                    "%s" % infile, progress=True)
+    cookie = solution.GetCacheStamp()
+    (verdict, time, cached) = yield self._TestOneCase(
+      solution, infile, cookie, ctx)
+    if cached:
+      result.cached = True
+    result.cases[infile].verdict = verdict
+    if verdict == TestResult.AC:
+      result.ruling_file = infile
+      result.good = False
+      result.passed = True
+      result.detail = "%s: Unexpectedly Accepted" % infile
+      ctx.errors.Error(solution, result.detail)
+      raise taskgraph.Bailout([False])
+    elif verdict not in (TestResult.WA, TestResult.TLE, TestResult.RE):
+      result.ruling_file = infile
+      result.good = False
+      result.passed = False
+      result.detail = "%s: Judge Error" % infile
+      ctx.errors.Error(solution, result.detail)
+      raise taskgraph.Bailout([False])
+    Console.PrintAction("TEST", solution,
+                        "%s: PASSED" % infile, progress=True)
+    yield True
+
+  @taskgraph.GeneratorTask.FromFunction
   def _TestSolutionWithAllCases(self, solution, ctx):
     """
     Test a solution without challenge cases.
     The solution can be marked as wrong but without challenge cases.
     """
     infiles = self.ListInputFiles(include_concat=True)
-    cookie = solution.GetCacheStamp()
     result = TestResult(self.problem, solution, infiles)
     # Try all cases.
-    for (i, infile) in enumerate(infiles):
-      Console.PrintAction(
-        "TEST", solution,
-        "[%d/%d] %s" % (i+1, len(infiles), infile),
-        progress=True)
-      ignore_timeout = (infile == FileNames.CONCAT_INFILE)
-      (verdict, time, cached) = self._TestOneCase(
-        solution, infile, cookie, ctx, ignore_timeout=ignore_timeout)
-      if cached:
-        result.cached = True
-      result.cases[infile].verdict = verdict
-      if verdict not in (TestResult.AC, TestResult.WA, TestResult.TLE, TestResult.RE):
-        result.ruling_file = infile
-        result.good = False
-        result.passed = False
-        result.detail = "%s: Judge Error" % infile
-        ctx.errors.Error(solution, result.detail, quiet=True)
-        break
-      elif verdict != TestResult.AC:
-        result.ruling_file = infile
-        result.passed = False
-        result.detail = "%s: %s" % (infile, verdict)
-        if solution.IsCorrect():
-          result.good = False
-          ctx.errors.Error(solution, result.detail, quiet=True)
-        else:
-          result.good = True
-        break
-      result.cases[infile].time = time
+    yield taskgraph.TaskBranch([
+        self._TestSolutionWithAllCasesOne(solution, infile, result, ctx)
+        for infile in infiles])
     if result.good is None:
       result.good = solution.IsCorrect()
       result.passed = True
       if not result.good:
         result.detail = "Unexpectedly Passed"
-    return result
+    yield result
 
-  def _TestOneCase(self, solution, infile, cookie, ctx, ignore_timeout=False):
+  @taskgraph.GeneratorTask.FromFunction
+  def _TestSolutionWithAllCasesOne(self, solution, infile, result, ctx):
+    """
+    Test a solution without challenge cases.
+    The solution can be marked as wrong but without challenge cases.
+    """
+    #Console.PrintAction("TEST", solution,
+    #                    "%s" % infile, progress=True)
+    cookie = solution.GetCacheStamp()
+    ignore_timeout = (infile == FileNames.CONCAT_INFILE)
+    (verdict, time, cached) = yield self._TestOneCase(
+      solution, infile, cookie, ignore_timeout, ctx)
+    if cached:
+      result.cached = True
+    result.cases[infile].verdict = verdict
+    if verdict not in (TestResult.AC, TestResult.WA, TestResult.TLE, TestResult.RE):
+      result.ruling_file = infile
+      result.good = False
+      result.passed = False
+      result.detail = "%s: Judge Error" % infile
+      ctx.errors.Error(solution, result.detail)
+      raise taskgraph.Bailout([False])
+    elif verdict != TestResult.AC:
+      result.ruling_file = infile
+      result.passed = False
+      result.detail = "%s: %s" % (infile, verdict)
+      if solution.IsCorrect():
+        result.good = False
+        ctx.errors.Error(solution, result.detail)
+      else:
+        result.good = True
+      raise taskgraph.Bailout([False])
+    result.cases[infile].time = time
+    Console.PrintAction("TEST", solution,
+                        "%s: PASSED" % infile, progress=True)
+    yield True
+
+  @taskgraph.GeneratorTask.FromFunction
+  def _TestOneCase(self, solution, infile, cookie, ignore_timeout, ctx):
     """
     Test a solution with one case.
     Cache results if option is set.
@@ -1592,15 +1692,16 @@ class Tests(BuildableObject):
           ctx.errors.Exception(solution)
           cached_cookie = None
         if cached_cookie == cookie:
-          return tuple(list(result)+[True])
-    result = self._TestOneCaseNoCache(solution, infile, ignore_timeout=ignore_timeout)
+          yield tuple(list(result)+[True])
+    result = yield self._TestOneCaseNoCache(solution, infile, ignore_timeout, ctx)
     try:
       FileUtil.PickleSave((cookie, result), cachefile)
     except:
       ctx.errors.Exception(solution)
-    return tuple(list(result)+[False])
+    yield tuple(list(result)+[False])
 
-  def _TestOneCaseNoCache(self, solution, infile, ignore_timeout=False):
+  @taskgraph.GeneratorTask.FromFunction
+  def _TestOneCaseNoCache(self, solution, infile, ignore_timeout, ctx):
     """
     Test a solution with one case.
     Never cache results.
@@ -1612,30 +1713,32 @@ class Tests(BuildableObject):
     timeout = self.problem.timeout
     if ignore_timeout:
       timeout = None
-    res = solution.Run(
-      args=[], cwd=solution.out_dir,
+    precise = (ctx.options.precise or ctx.options.parallelism == 1)
+    res = yield solution.Run(
+      args=(), cwd=solution.out_dir,
       input=os.path.join(self.out_dir, infile),
       output=os.path.join(solution.out_dir, outfile),
-      timeout=timeout)
+      timeout=timeout, precise=precise)
     if res.status == RunResult.TLE:
-      return (TestResult.TLE, None)
+      yield (TestResult.TLE, None)
     if res.status != RunResult.OK:
-      return (TestResult.RE, None)
+      yield (TestResult.RE, None)
     time = res.time
-    res = self.judge.Run(
-      args=['--infile', os.path.join(self.out_dir, infile),
+    res = yield self.judge.Run(
+      args=('--infile', os.path.join(self.out_dir, infile),
             '--difffile', os.path.join(self.out_dir, difffile),
-            '--outfile', os.path.join(solution.out_dir, outfile)],
+            '--outfile', os.path.join(solution.out_dir, outfile)),
       cwd=self.out_dir,
       input=os.devnull,
       output=os.path.join(solution.out_dir, judgefile),
-      timeout=None)
+      timeout=None, precise=False)
     if res.status == RunResult.OK:
-      return (TestResult.AC, time)
+      yield (TestResult.AC, time)
     if res.status == RunResult.NG:
-      return (TestResult.WA, None)
-    return ("Validator " + res.status, None)
+      yield (TestResult.WA, None)
+    yield ("Validator " + res.status, None)
 
+  @taskgraph.GeneratorTask.FromFunction
   def Pack(self, ctx):
     """
     Pack test cases.
@@ -1644,8 +1747,8 @@ class Tests(BuildableObject):
       # TODO: do caching of packed tests output here.
       pass
     else:
-      if not self.Build(ctx):
-        return False
+      if not (yield self.Build(ctx)):
+        yield False
     infiles = self.ListInputFiles()
     Console.PrintAction("PACK", self, progress=True)
     if not os.path.isdir(self.pack_dir):
@@ -1653,7 +1756,7 @@ class Tests(BuildableObject):
         FileUtil.MakeDir(self.pack_dir)
       except:
         ctx.errors.Exception(self)
-        return False
+        yield False
     for (i, infile) in enumerate(infiles):
       basename = os.path.splitext(infile)[0]
       difffile = basename + FileNames.DIFF_EXT
@@ -1676,35 +1779,35 @@ class Tests(BuildableObject):
                           os.path.join(self.pack_dir, packed_difffile))
       except:
         ctx.errors.Exception(self)
-        return False
-    tar_args = ["tar", "czf",
+        yield False
+    tar_args = ("tar", "czf",
                 os.path.join(os.pardir, FileNames.TESTS_PACKED_TARBALL),
-                os.curdir]
+                os.curdir)
     Console.PrintAction(
       "PACK",
       self,
       " ".join(tar_args),
       progress=True)
-    ret = -1
+    devnull = FileUtil.OpenNull()
+    task = taskgraph.ExternalProcessTask(
+      tar_args, cwd=self.pack_dir,
+      stdin=devnull, stdout=devnull, stderr=devnull)
     try:
-      devnull = FileUtil.OpenNull()
-      ret = subprocess.call(tar_args,
-                            cwd=self.pack_dir,
-                            stdin=devnull,
-                            stdout=devnull,
-                            stderr=devnull)
+      proc = yield task
     except:
       ctx.errors.Exception(self)
-      return False
+      yield False
+    ret = proc.returncode
     if ret != 0:
       ctx.errors.Error(self, "tar failed: ret = %d" % ret)
-      return False
+      yield False
     Console.PrintAction(
       "PACK",
       self,
       FileNames.TESTS_PACKED_TARBALL)
-    return True
+    yield True
 
+  @taskgraph.GeneratorTask.FromFunction
   def Clean(self, ctx):
     """
     Remove test cases.
@@ -1714,6 +1817,7 @@ class Tests(BuildableObject):
       FileUtil.RemoveTree(self.out_dir)
     except:
       ctx.errors.Exception(self)
+    yield True
 
   def ListInputFiles(self, include_concat=False):
     """
@@ -1812,6 +1916,7 @@ class Solution(BuildableObject):
     """
     return self.correct
 
+  @taskgraph.GeneratorTask.FromFunction
   def Build(self, ctx):
     """
     Build this solution.
@@ -1819,45 +1924,49 @@ class Solution(BuildableObject):
     #Console.PrintAction("BUILD", self)
     if self.IsBuildCached():
       Console.PrintAction("COMPILE", self, "up-to-date")
-      return True
+      yield True
     if not self.code.QUIET_COMPILE:
       Console.PrintAction("COMPILE", self)
-    res = self.code.Compile()
+    res = yield self.code.Compile()
     log = self.code.ReadCompileLog()
     if res.status != RunResult.OK:
       ctx.errors.Error(self, "Compile Error (%s)" % res.status)
       Console.PrintLog(log)
-      return False
+      yield False
     if log:
       ctx.errors.Warning(self, "Compiler warnings found")
       Console.PrintLog(log)
     if not self.SetCacheStamp(ctx):
-      return False
-    return True
+      yield False
+    yield True
 
+  @taskgraph.GeneratorTask.FromFunction
   def Test(self, ctx):
     """
     Test this solution.
     """
-    return self.problem.tests.TestSolution(self, ctx)
+    yield (yield self.problem.tests.TestSolution(self, ctx))
 
-  def Run(self, args, cwd, input, output, timeout):
+  @taskgraph.GeneratorTask.FromFunction
+  def Run(self, args, cwd, input, output, timeout, precise):
     """
     Run this solution.
     """
-    return self.code.Run(args=args, cwd=cwd,
-                         input=input, output=output, timeout=timeout)
+    yield (yield self.code.Run(
+        args=args, cwd=cwd, input=input, output=output,
+        timeout=timeout, precise=precise))
 
+  @taskgraph.GeneratorTask.FromFunction
   def Clean(self, ctx):
     """
     Clean this solution.
     """
     Console.PrintAction("CLEAN", self)
-    e = self.code.Clean()
+    e = yield self.code.Clean()
     if e:
       ctx.errors.Exception(self, e)
-      return False
-    return True
+      yield False
+    yield True
 
 
 
@@ -1898,22 +2007,24 @@ class Rime(object):
     if not obj:
       Console.PrintError("Target directory is not managed by Rime.")
       return 1
+    # Create TaskPool with specified parallelism.
+    pool = taskgraph.TaskPool(parallelism=ctx.options.parallelism)
     # Call.
     if cmd == 'build':
-      success = obj.Build(ctx)
+      success = pool.Run(obj.Build(ctx))
       Console.Print("Finished Build.")
       Console.Print()
     elif cmd == 'test':
-      results = obj.Test(ctx)
+      results = pool.Run(obj.Test(ctx))
       Console.Print("Finished Test.")
       Console.Print()
-      self.PrintTestSummary(results)
+      self.PrintTestSummary(results, ctx)
     elif cmd == 'clean':
-      success = obj.Clean(ctx)
+      success = pool.Run(obj.Clean(ctx))
       Console.Print("Finished Clean.")
       Console.Print()
     elif cmd == 'pack':
-      success = obj.Pack(ctx)
+      success = pool.Run(obj.Pack(ctx))
       Console.Print("Finished Pack.")
       Console.Print()
     else:
@@ -1946,7 +2057,7 @@ class Rime(object):
     """
     print HELP_MESSAGE
 
-  def PrintTestSummary(self, results):
+  def PrintTestSummary(self, results, ctx):
     if len(results) == 0:
       return
     Console.Print(Console.BOLD, "Test Summary:", Console.NORMAL)
@@ -1977,10 +2088,10 @@ class Rime(object):
         " "]
       if result.good:
         if result.passed:
-          if result.IsTimeStatsAvailable():
+          if result.IsTimeStatsAvailable(ctx):
             status_row += [result.GetTimeStats()]
           else:
-            status_row += ["(no test)"]
+            status_row += ["(*/*)"]
         else:
           status_row += ["Expectedly Failed"]
       else:
@@ -2003,6 +2114,10 @@ class Rime(object):
     """
     parser = optparse.OptionParser(add_help_option=False)
     parser.add_option('-h', '--help', dest='show_help',
+                      default=False, action="store_true")
+    parser.add_option('-j', '--parallelism', dest='parallelism',
+                      default=1, action="store", type="int")
+    parser.add_option('-p', '--precise', dest='precise',
                       default=False, action="store_true")
     parser.add_option('-C', '--cache-tests', dest='cache_tests',
                       default=False, action="store_true")
@@ -2050,5 +2165,6 @@ def main():
 
 
 if __name__ == '__main__':
+  #logging.basicConfig(level=logging.INFO)
   main()
 
