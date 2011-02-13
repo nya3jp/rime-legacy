@@ -1291,6 +1291,7 @@ class FileBasedCode(Code):
     code = proc.returncode
     # Retry if TLE.
     if not precise and code == -(signal.SIGKILL):
+      self._ResetIO(stdin, stdout, stderr)
       task = ExternalProcessTask(
         args, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, timeout=timeout,
         exclusive=True)
@@ -1306,6 +1307,15 @@ class FileBasedCode(Code):
       status = RunResult.NG
     yield RunResult(status, task.time)
 
+  def _ResetIO(self, *args):
+    for f in args:
+      if f is None:
+        continue
+      try:
+        f.seek(0)
+        f.truncate()
+      except IOError:
+        pass
 
 
 class CCode(FileBasedCode):
