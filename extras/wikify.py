@@ -37,6 +37,13 @@ import urllib
 import urllib2
 
 
+HELP_MESSAGE = """\
+Usage: wikify.py [OPTIONS]
+
+Options are the same as rime.py.
+"""
+
+
 BGCOLOR_TITLE  = 'BGCOLOR(#eeeeee):'
 BGCOLOR_NORMAL = 'BGCOLOR(#f8f8f8):'
 BGCOLOR_GOOD   = 'BGCOLOR(#ccffcc):'
@@ -62,9 +69,11 @@ def LoadRimeModule():
   rime = imp.load_source('rime', os.path.join(dir, 'rime.py'))
 
 
-def GenerateWiki(root, ctx):
+def GenerateWiki(root, rime, arime, ctx):
   # Clean and update.
-  root.Clean(ctx)
+  graph = arime.CreateTaskGraph(ctx)
+  graph.Run(root.Clean(ctx))
+  graph.Close()
   rime.Console.PrintAction("UPDATE", None, "svn up")
   subprocess.call(['svn', 'up'])
   # Get system information.
@@ -75,51 +84,62 @@ def GenerateWiki(root, ctx):
   wiki = "このセクションは wikify.py により自動生成されています (rev.%s, uploaded by %s @ %s)\n" % (rev, username, hostname)
   wiki += "|||CENTER:|CENTER:|CENTER:|CENTER:|CENTER:|c\n"
   wiki += "|~問題|~担当|~解答|~入力|~出力|~入検|~出検|\n"
-  for problem in root.problems:
-    # For each problem fill these cells.
-    cell_solutions = CELL_BAD
-    cell_input = CELL_BAD
-    cell_output = CELL_BAD
-    cell_validator = CELL_BAD
-    cell_judge = CELL_NA
-    # Get status.
-    title = problem.config.get('TITLE') or "No Title"
-    wikiname = problem.config.get('WIKI_NAME') or "No Wiki Name"
-    assignees = problem.config.get('ASSIGNEES') or ""
-    if type(assignees) is list:
-      assignees = ",".join(assignees)
-    results = problem.Test(ctx)
-    num_tests = len(problem.tests.ListInputFiles())
-    correct_solution_results = [result for result in results if result.solution.IsCorrect()]
-    num_corrects = len(correct_solution_results)
-    num_bads = len([result for result in results if not result.good])
-    input_fixed = problem.config.get('INPUT_FIXED')
-    need_custom_judge = problem.config.get('NEED_CUSTOM_JUDGE')
-    # Solutions:
-    if num_corrects >= 2:
-      cell_solutions = CELL_GOOD
-    elif num_corrects >= 1:
-      cell_solutions = CELL_NOTBAD
-    # Input:
-    if input_fixed:
-      cell_input = BGCOLOR_GOOD + str(num_tests)
-    elif num_tests >= 20:
-      cell_input = BGCOLOR_NOTBAD + str(num_tests)
-    # Output:
-    if num_bads == 0 and num_tests >= 10 and num_corrects >= 2:
-      cell_output = CELL_GOOD
-    # Validator:
-    if not problem.tests.validators:
-      cell_validator = CELL_GOOD
-    # Judge:
-    if need_custom_judge:
-      if problem.tests.judge.__class__.__name__ != "DiffCode":
-        cell_judge = CELL_GOOD
-      else:
-        cell_judge = CELL_BAD
-    # Done.
-    wiki += "|[[%(title)s>%(wikiname)s]]|%(assignees)s|%(cell_solutions)s|%(cell_input)s|%(cell_output)s|%(cell_validator)s|%(cell_judge)s|\n" % locals()
+  graph = arime.CreateTaskGraph(ctx)
+  wiki += graph.Run(
+    rime.GeneratorTask.FromFunction(_GenerateWikiProblems)(root, rime, ctx))
+  graph.Close()
   return wiki
+
+def _GenerateWikiProblems(root, rime, ctx):
+  results = yield rime.TaskBranch([
+      rime.GeneratorTask.FromFunction(_GenerateWikiOne)(problem, ctx)
+      for problem in root.problems])
+  yield "".join(results)
+
+def _GenerateWikiOne(problem, ctx):
+  # For each problem fill these cells.
+  cell_solutions = CELL_BAD
+  cell_input = CELL_BAD
+  cell_output = CELL_BAD
+  cell_validator = CELL_BAD
+  cell_judge = CELL_NA
+  # Get status.
+  title = problem.config.get('TITLE') or "No Title"
+  wikiname = problem.config.get('WIKI_NAME') or "No Wiki Name"
+  assignees = problem.config.get('ASSIGNEES') or ""
+  if type(assignees) is list:
+    assignees = ",".join(assignees)
+  results = yield problem.Test(ctx)
+  num_tests = len(problem.tests.ListInputFiles())
+  correct_solution_results = [result for result in results if result.solution.IsCorrect()]
+  num_corrects = len(correct_solution_results)
+  num_bads = len([result for result in results if not result.good])
+  input_fixed = problem.config.get('INPUT_FIXED')
+  need_custom_judge = problem.config.get('NEED_CUSTOM_JUDGE')
+  # Solutions:
+  if num_corrects >= 2:
+    cell_solutions = CELL_GOOD
+  elif num_corrects >= 1:
+    cell_solutions = CELL_NOTBAD
+  # Input:
+  if input_fixed:
+    cell_input = BGCOLOR_GOOD + str(num_tests)
+  elif num_tests >= 20:
+    cell_input = BGCOLOR_NOTBAD + str(num_tests)
+  # Output:
+  if num_bads == 0 and num_tests >= 10 and num_corrects >= 2:
+    cell_output = CELL_GOOD
+  # Validator:
+  if not problem.tests.validators:
+    cell_validator = CELL_GOOD
+  # Judge:
+  if need_custom_judge:
+    if problem.tests.judge.__class__.__name__ != "DiffCode":
+      cell_judge = CELL_GOOD
+    else:
+      cell_judge = CELL_BAD
+  # Done.
+  yield "|[[%(title)s>%(wikiname)s]]|%(assignees)s|%(cell_solutions)s|%(cell_input)s|%(cell_output)s|%(cell_validator)s|%(cell_judge)s|\n" % locals()
 
 
 def UploadWiki(root, wiki):
@@ -151,14 +171,18 @@ def main():
   # Initialize Rime object.
   LoadRimeModule()
   arime = rime.Rime()
-  options = arime.GetDefaultOptions()
+  option_parser = arime.GetOptionParser()
+  options, extra_args = option_parser.parse_args(sys.argv)
+  if options.show_help:
+    print HELP_MESSAGE
+    return
   ctx = rime.RimeContext(options)
   root = arime.LoadRoot(os.getcwd(), ctx)
   if not root:
     ctx.errors.PrintSummary()
     return
   os.chdir(root.base_dir)
-  wiki = GenerateWiki(root, ctx)
+  wiki = GenerateWiki(root, rime, arime, ctx)
   UploadWiki(root, wiki)
 
 

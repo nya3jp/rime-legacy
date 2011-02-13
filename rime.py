@@ -2631,11 +2631,8 @@ class Rime(object):
     if not obj:
       Console.PrintError("Target directory is not managed by Rime.")
       return 1
-    # Create TaskGraph with specified parallelism and run a task.
-    if options.parallelism == 1:
-      graph = SerialTaskGraph()
-    else:
-      graph = FiberTaskGraph(parallelism=ctx.options.parallelism)
+    # Run the task.
+    graph = self.CreateTaskGraph(ctx)
     try:
       if cmd == 'build':
         success = graph.Run(obj.Build(ctx))
@@ -2679,6 +2676,16 @@ class Rime(object):
     root = RimeRoot(None, path, None)
     root.Load(ctx)
     return root
+
+  def CreateTaskGraph(self, ctx):
+    """
+    Create the instance of TaskGraph to use for this session.
+    """
+    if ctx.options.parallelism == 1:
+      graph = SerialTaskGraph()
+    else:
+      graph = FiberTaskGraph(parallelism=ctx.options.parallelism)
+    return graph
 
   def PrintHelp(self):
     """
