@@ -705,9 +705,15 @@ class FiberTaskGraph(object):
     while self._RunNextTask():
       pass
     self._UpdateCumulativeParallelism()
-    self.parallelism_efficiency = (
-      self.cumulative_parallelism /
-      (self.parallelism * (self.last_tick - self.first_tick)))
+    if self.last_tick > self.first_tick:
+      parallelism_efficiency = (
+        self.cumulative_parallelism /
+        (self.parallelism * (self.last_tick - self.first_tick)))
+    else:
+      parallelism_efficiency = 1.0
+    self._Log("Parallelism efficiency: %.2f%%" %
+              (100.0 * parallelism_efficiency),
+              level=1)
     assert self.task_state[None] == READY
     del self.task_state[None]
     del self.task_graph[None]
@@ -2804,12 +2810,10 @@ class Rime(object):
       return 1
     # Run the task.
     graph = self.CreateTaskGraph(ctx)
-    parallelism_efficiency = None
     try:
       if cmd == 'build':
         success = graph.Run(obj.Build(ctx))
         Console.Print("Finished Build.")
-        Console.Print()
       elif cmd == 'test':
         results = graph.Run(obj.Test(ctx))
         Console.Print("Finished Test.")
@@ -2818,16 +2822,12 @@ class Rime(object):
       elif cmd == 'clean':
         success = graph.Run(obj.Clean(ctx))
         Console.Print("Finished Clean.")
-        Console.Print()
       elif cmd == 'pack':
         success = graph.Run(obj.Pack(ctx))
         Console.Print("Finished Pack.")
-        Console.Print()
       else:
         Console.PrintError("Unknown command: %s" % cmd)
         return 1
-      if hasattr(graph, 'parallelism_efficiency'):
-        parallelism_efficiency = graph.parallelism_efficiency;
     except KeyboardInterrupt:
       if ctx.options.debug >= 1:
         traceback.print_exc()
@@ -2837,9 +2837,6 @@ class Rime(object):
     Console.Print()
     Console.Print(Console.BOLD, "Error Summary:", Console.NORMAL)
     ctx.errors.PrintSummary()
-    if parallelism_efficiency is not None:
-      Console.Print("Parallelism efficiency: %.2f%%" %
-                    (100.0 * parallelism_efficiency))
     return 0
 
   def LoadRoot(self, cwd, ctx):
@@ -2926,8 +2923,9 @@ class Rime(object):
         status_row += [" ", "(cached)"]
       Console.Print(*status_row)
     if not (ctx.options.precise or ctx.options.parallelism == 1):
+      Console.Print()
       Console.Print("Note: Timings are not displayed when "
-                    "concurrent processing is enabled.")
+                    "parallel testing is enabled.")
       Console.Print("      To show them, try -p (--precise).")
 
   def GetOptionParser(self):
