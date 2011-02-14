@@ -130,7 +130,7 @@ def _GenerateWikiOne(problem, ctx):
   if num_bads == 0 and num_tests >= 10 and num_corrects >= 2:
     cell_output = CELL_GOOD
   # Validator:
-  if not problem.tests.validators:
+  if problem.tests.validators:
     cell_validator = CELL_GOOD
   # Judge:
   if need_custom_judge:
