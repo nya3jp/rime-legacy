@@ -2385,8 +2385,9 @@ class Tests(BuildableObject):
     #Console.PrintAction("TEST", solution,
     #                    "%s" % infile, progress=True)
     cookie = solution.GetCacheStamp()
+    ignore_timeout = (infile == FileNames.CONCAT_INFILE)
     (verdict, time, cached) = yield self._TestOneCase(
-      solution, infile, cookie, ctx)
+      solution, infile, cookie, ignore_timeout, ctx)
     if cached:
       result.cached = True
     result.cases[infile].verdict = verdict
