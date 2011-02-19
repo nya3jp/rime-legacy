@@ -54,11 +54,12 @@ Commands:
   help      show this help message and exit
 
 Options:
-  -j, --parallelism=num  run processes in parallel
-  -p, --precise          don't run timing tasks concurrently
-  -C, --cache-tests      cache test results
-  -d, --debug            print debug messages
-  -h, --help             show this help message and exit
+  -i, --ignore-errors  don't skip tests on failure
+  -j, --jobs=num       run processes in parallel
+  -p, --precise        don't run timing tasks concurrently
+  -C, --cache-tests    cache test results [experimental]
+  -d, --debug          print debug messages
+  -h, --help           show this help message and exit
 """
 
 
@@ -2403,14 +2404,20 @@ class Tests(BuildableObject):
       result.passed = True
       result.detail = "%s: Unexpectedly Accepted" % infile
       ctx.errors.Error(solution, result.detail)
-      raise Bailout([False])
+      if ctx.options.ignore_errors:
+        yield False
+      else:
+        raise Bailout([False])
     elif verdict not in (TestResult.WA, TestResult.TLE, TestResult.RE):
       result.ruling_file = infile
       result.good = False
       result.passed = False
       result.detail = "%s: Judge Error" % infile
       ctx.errors.Error(solution, result.detail)
-      raise Bailout([False])
+      if ctx.options.ignore_errors:
+        yield False
+      else:
+        raise Bailout([False])
     Console.PrintAction("TEST", solution,
                         "%s: PASSED" % infile, progress=True)
     yield True
@@ -2456,7 +2463,10 @@ class Tests(BuildableObject):
       result.passed = False
       result.detail = "%s: Judge Error" % infile
       ctx.errors.Error(solution, result.detail)
-      raise Bailout([False])
+      if ctx.options.ignore_errors:
+        yield False
+      else:
+        raise Bailout([False])
     elif verdict != TestResult.AC:
       result.ruling_file = infile
       result.passed = False
@@ -2466,7 +2476,10 @@ class Tests(BuildableObject):
         ctx.errors.Error(solution, result.detail)
       else:
         result.good = True
-      raise Bailout([False])
+      if ctx.options.ignore_errors:
+        yield False
+      else:
+        raise Bailout([False])
     result.cases[infile].time = time
     Console.PrintAction("TEST", solution,
                         "%s: PASSED" % infile, progress=True)
@@ -2933,16 +2946,18 @@ class Rime(object):
     Construct optparse.OptionParser object for Rime.
     """
     parser = optparse.OptionParser(add_help_option=False)
-    parser.add_option('-h', '--help', dest='show_help',
-                      default=False, action="store_true")
-    parser.add_option('-j', '--parallelism', dest='parallelism',
+    parser.add_option('-j', '--jobs', dest='parallelism',
                       default=1, action="store", type="int")
     parser.add_option('-p', '--precise', dest='precise',
+                      default=False, action="store_true")
+    parser.add_option('-i', '--ignore-errors', dest='ignore_errors',
                       default=False, action="store_true")
     parser.add_option('-C', '--cache-tests', dest='cache_tests',
                       default=False, action="store_true")
     parser.add_option('-d', '--debug', dest='debug',
                       default=0, action="count")
+    parser.add_option('-h', '--help', dest='show_help',
+                      default=False, action="store_true")
     return parser
 
   def GetDefaultOptions(self):
