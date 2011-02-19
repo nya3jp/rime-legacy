@@ -54,11 +54,11 @@ Commands:
   help      show this help message and exit
 
 Options:
-  -h, --help             show this help message and exit
   -j, --parallelism=num  run processes in parallel
   -p, --precise          don't run timing tasks concurrently
   -C, --cache-tests      cache test results
   -d, --debug            print debug messages
+  -h, --help             show this help message and exit
 """
 
 
