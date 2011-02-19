@@ -116,7 +116,7 @@ class FileUtil(object):
   def ListDir(cls, dir, recursive=False):
     files = []
     try:
-      files = filter(lambda x: not x.startswith("."),
+      files = filter(lambda x: not x.startswith('.'),
                      os.listdir(dir))
       if recursive:
         for subfile in files[:]:
@@ -269,9 +269,9 @@ class Console(object):
     Each argument is either ordinal string or control code.
     """
     progress = bool(kwargs.get('progress'))
-    msg = "".join(args)
+    msg = ''.join(args)
     if cls.last_progress and cls.cap.overwrite:
-      print cls.UP + "\r" + msg + cls.KILL
+      print cls.UP + '\r' + msg + cls.KILL
     else:
       print msg
     cls.last_progress = progress
@@ -281,13 +281,13 @@ class Console(object):
     """
     Utility function to print actions.
     """
-    real_args = [cls.GREEN, "[" + action.center(10) + "]", cls.NORMAL]
+    real_args = [cls.GREEN, '[' + action.center(10) + ']', cls.NORMAL]
     if obj:
-      real_args += [" ", obj.fullname]
+      real_args += [' ', obj.fullname]
     if args:
       if obj:
-        real_args += [":"]
-      real_args += [" "] + list(args)
+        real_args += [':']
+      real_args += [' '] + list(args)
     cls.Print(*real_args, **kwargs)
 
   @classmethod
@@ -295,14 +295,14 @@ class Console(object):
     """
     Utility function to print errors.
     """
-    cls.Print(cls.RED, "ERROR:", cls.NORMAL, " ", msg)
+    cls.Print(cls.RED, 'ERROR:', cls.NORMAL, ' ', msg)
 
   @classmethod
   def PrintWarning(cls, msg):
     """
     Utility function to print warnings.
     """
-    cls.Print(cls.YELLOW, "WARNING:", cls.NORMAL, " ", msg)
+    cls.Print(cls.YELLOW, 'WARNING:', cls.NORMAL, ' ', msg)
 
   @classmethod
   def PrintLog(cls, log):
@@ -712,7 +712,7 @@ class FiberTaskGraph(object):
         (self.parallelism * (self.last_tick - self.first_tick)))
     else:
       parallelism_efficiency = 1.0
-    self._Log("Parallelism efficiency: %.2f%%" %
+    self._Log('Parallelism efficiency: %.2f%%' %
               (100.0 * parallelism_efficiency),
               level=1)
     assert self.task_state[None] == READY
@@ -1153,11 +1153,11 @@ class ErrorRecorder(object):
     If quiet is True it is not printed immediately, but shown in summary.
     """
     if source:
-      msg = "%s: %s" % (source.fullname, reason)
+      msg = '%s: %s' % (source.fullname, reason)
     else:
       msg = reason
     if self.ctx.options.debug >= 1:
-      msg += " [" + self._FormatStack(stack_offset) + "]"
+      msg += ' [' + self._FormatStack(stack_offset) + ']'
     self.errors.append(msg)
     if not quiet:
       Console.PrintError(msg)
@@ -1168,11 +1168,11 @@ class ErrorRecorder(object):
     If quiet is True it is not printed immediately, but shown in summary.
     """
     if source:
-      msg = "%s: %s" % (source.fullname, reason)
+      msg = '%s: %s' % (source.fullname, reason)
     else:
       msg = reason
     if self.ctx.options.debug >= 1:
-      msg += " [" + self._FormatStack(stack_offset) + "]"
+      msg += ' [' + self._FormatStack(stack_offset) + ']'
     self.warnings.append(msg)
     if not quiet:
       Console.PrintWarning(msg)
@@ -1203,7 +1203,7 @@ class ErrorRecorder(object):
       Console.PrintError(e)
     for e in self.warnings:
       Console.PrintWarning(e)
-    Console.Print(("Total %d errors, %d warnings" %
+    Console.Print(('Total %d errors, %d warnings' %
                    (len(self.errors), len(self.warnings))))
 
 
@@ -1239,12 +1239,12 @@ class TestResult(object):
 
   # Note: verdict can be set different from any of these;
   # in that case, you should treat it as System Error.
-  NA = "-"
-  AC = "Accepted"
-  WA = "Wrong Answer"
-  TLE = "Time Limit Exceeded"
-  RE = "Runtime Error"
-  ERR = "System Error"
+  NA = '-'
+  AC = 'Accepted'
+  WA = 'Wrong Answer'
+  TLE = 'Time Limit Exceeded'
+  RE = 'Runtime Error'
+  ERR = 'System Error'
 
   def __init__(self, problem, solution, files):
     """
@@ -1276,23 +1276,23 @@ class TestResult(object):
     """
     if (FileNames.CONCAT_INFILE in self.cases and
         self.cases[FileNames.CONCAT_INFILE].time is not None):
-      return "(%.2f/%.2f/%.2f)" % (self.GetMaxTime(), self.GetTotalTime(),
+      return '(%.2f/%.2f/%.2f)' % (self.GetMaxTime(), self.GetTotalTime(),
                                    self.cases[FileNames.CONCAT_INFILE].time)
-    return "(%.2f/%.2f)" % (self.GetMaxTime(), self.GetTotalTime())
+    return '(%.2f/%.2f)' % (self.GetMaxTime(), self.GetTotalTime())
 
   def GetMaxTime(self):
     """
     Get maximum time.
     All case should be accepted.
     """
-    return max([c.time for k, c in self.cases.items() if not k.startswith(".")])
+    return max([c.time for k, c in self.cases.items() if not k.startswith('.')])
 
   def GetTotalTime(self):
     """
     Get total time.
     All case should be accepted.
     """
-    return sum([c.time for k, c in self.cases.items() if not k.startswith(".")])
+    return sum([c.time for k, c in self.cases.items() if not k.startswith('.')])
 
   @classmethod
   def CompareForListing(cls, a, b):
@@ -1318,11 +1318,11 @@ class RunResult(object):
   Note that this is not judgement result but just execution status.
   """
 
-  OK = "OK"
-  NG = "Exited Abnormally"
-  RE = "Runtime Error"
-  TLE = "Time Limit Exceeded"
-  PM = "Prerequisite Missing"
+  OK = 'OK'
+  NG = 'Exited Abnormally'
+  RE = 'Runtime Error'
+  TLE = 'Time Limit Exceeded'
+  PM = 'Prerequisite Missing'
 
   def __init__(self, status, time):
     self.status = status
@@ -1388,7 +1388,7 @@ class FileBasedCode(Code):
     try:
       for name in self.prereqs:
         if not FileUtil.LocateBinary(name):
-          yield RunResult("%s: %s" % (RunResult.PM, name), None)
+          yield RunResult('%s: %s' % (RunResult.PM, name), None)
       self.MakeOutDir()
       result = yield self._ExecForCompile(args=self.compile_args)
     except Exception, e:
@@ -1564,7 +1564,7 @@ class DiffCode(Code):
   @GeneratorTask.FromFunction
   def Compile(self):
     if not FileUtil.LocateBinary('diff'):
-      yield RunResult("%s: diff" % RunResult.PM, None)
+      yield RunResult('%s: diff' % RunResult.PM, None)
     yield RunResult(RunResult.OK, 0.0)
 
   @GeneratorTask.FromFunction
@@ -1635,7 +1635,7 @@ class ConfigurableObject(object):
     elif parent is None or parent.fullname is None:
       self.fullname = name
     else:
-      self.fullname = parent.fullname + "/" + name
+      self.fullname = parent.fullname + '/' + name
     # Locate config file.
     self.config_file = os.path.join(base_dir, self.CONFIG_FILE)
     self.real_config_file = self.config_file
@@ -1765,9 +1765,8 @@ class BuildableObject(ConfigurableObject):
       field = getattr(self, field_name)
       if not multiple:
         if field is not None:
-          # TODO: remove this all_result reference.
           raise RimeConfigurationError(
-            "Multiple %ss specified" % command_name)
+            'Multiple %ss specified' % command_name)
         setattr(self, field_name, code)
       if multiple:
         field.append(code)
@@ -1795,10 +1794,10 @@ class BuildableObject(ConfigurableObject):
         src_name=src,
         src_dir=self.src_dir, out_dir=self.out_dir,
         interpreter=interpreter))
-    registers = [("c_" + command_name, CRegister),
-                 ("cxx_" + command_name, CXXRegister),
-                 ("java_" + command_name, JavaRegister),
-                 ("script_" + command_name, ScriptRegister)]
+    registers = [('c_' + command_name, CRegister),
+                 ('cxx_' + command_name, CXXRegister),
+                 ('java_' + command_name, JavaRegister),
+                 ('script_' + command_name, ScriptRegister)]
     for (name, func) in registers:
       self._export_dict[name] = func
       setattr(self, name, func)
@@ -1813,7 +1812,7 @@ class RimeRoot(ConfigurableObject):
   CONFIG_FILE = FileNames.RIMEROOT_FILE
 
   def _PreLoad(self, ctx):
-    self._export_dict["root"] = self
+    self._export_dict['root'] = self
 
   def _PostLoad(self, ctx):
     self.concat_test = self.config.get('CONCAT_TEST')
@@ -1886,13 +1885,13 @@ class Problem(BuildableObject):
       name, base_dir, os.path.join(base_dir, FileNames.RIME_OUT_DIR), parent)
 
   def _PreLoad(self, ctx):
-    self._export_dict["problem"] = self
-    self._export_dict["root"] = self.root
+    self._export_dict['problem'] = self
+    self._export_dict['root'] = self.root
 
   def _PostLoad(self, ctx):
     # Read time limit.
     if 'TIME_LIMIT' not in self.config:
-      ctx.errors.Error(self, "Time limit is not specified")
+      ctx.errors.Error(self, 'Time limit is not specified')
     else:
       self.timeout = self.config['TIME_LIMIT']
     # Decide ID.
@@ -1935,7 +1934,7 @@ class Problem(BuildableObject):
       if self.reference_solution is None:
         ctx.errors.Error(
           self,
-          ("Reference solution \"%s\" does not exist" %
+          ('Reference solution "%s" does not exist' %
            reference_solution_name))
 
   def FindByBaseDir(self, base_dir):
@@ -1976,7 +1975,7 @@ class Problem(BuildableObject):
     """
     Clean all solutions and tests.
     """
-    Console.PrintAction("CLEAN", self)
+    Console.PrintAction('CLEAN', self)
     success = True
     if success:
       try:
@@ -2013,10 +2012,10 @@ class Tests(BuildableObject):
     self._AddCodeRegisterer('judge', 'judge')
     if not os.path.isfile(self.config_file):
       ctx.errors.Warning(self,
-                         "%s does not exist" % self.CONFIG_FILE)
-    self._export_dict["tests"] = self
-    self._export_dict["root"] = self.root
-    self._export_dict["problem"] = self.problem
+                         '%s does not exist' % self.CONFIG_FILE)
+    self._export_dict['tests'] = self
+    self._export_dict['root'] = self.root
+    self._export_dict['problem'] = self.problem
 
   def _PostLoad(self, ctx):
     # TODO: print warnings if no validator / judge is specified.
@@ -2082,11 +2081,11 @@ class Tests(BuildableObject):
     Compile a single input generator.
     """
     if not generator.QUIET_COMPILE:
-      Console.PrintAction("COMPILE", self, generator.src_name)
+      Console.PrintAction('COMPILE', self, generator.src_name)
     res = yield generator.Compile()
     if res.status != RunResult.OK:
       ctx.errors.Error(self,
-                       "%s: Compile Error (%s)" % (generator.src_name, res.status))
+                       '%s: Compile Error (%s)' % (generator.src_name, res.status))
       Console.PrintLog(generator.ReadCompileLog())
       raise Bailout([False])
     yield True
@@ -2106,13 +2105,13 @@ class Tests(BuildableObject):
     """
     Run a single input generator.
     """
-    Console.PrintAction("GENERATE", self, generator.src_name)
+    Console.PrintAction('GENERATE', self, generator.src_name)
     res = yield generator.Run(
       args=(), cwd=self.out_dir,
       input=os.devnull, output=os.devnull, timeout=None, precise=False)
     if res.status != RunResult.OK:
       ctx.errors.Error(self,
-                       "%s: %s" % (generator.src_name, res.status))
+                       '%s: %s' % (generator.src_name, res.status))
       raise Bailout([False])
     yield True
 
@@ -2132,11 +2131,11 @@ class Tests(BuildableObject):
     Compile a single input validator.
     """
     if not validator.QUIET_COMPILE:
-      Console.PrintAction("COMPILE", self, validator.src_name)
+      Console.PrintAction('COMPILE', self, validator.src_name)
     res = yield validator.Compile()
     if res.status != RunResult.OK:
       ctx.errors.Error(self,
-                       "%s: Compile Error (%s)" % (validator.src_name, res.status))
+                       '%s: Compile Error (%s)' % (validator.src_name, res.status))
       Console.PrintLog(validator.ReadCompileLog())
       raise Bailout([False])
     yield True
@@ -2147,8 +2146,8 @@ class Tests(BuildableObject):
     Run input validators.
     """
     if not self.validators:
-      Console.PrintAction("VALIDATE", self, "skipping: validator unavailable")
-      ctx.errors.Warning(self, "Validator Unavailable")
+      Console.PrintAction('VALIDATE', self, 'skipping: validator unavailable')
+      ctx.errors.Warning(self, 'Validator Unavailable')
       yield True
     infiles = self.ListInputFiles()
     results = yield TaskBranch([
@@ -2157,7 +2156,7 @@ class Tests(BuildableObject):
         for infile in infiles])
     if not all(results):
       yield False
-    Console.PrintAction("VALIDATE", self, "OK")
+    Console.PrintAction('VALIDATE', self, 'OK')
     yield True
 
   @GeneratorTask.FromFunction
@@ -2165,8 +2164,8 @@ class Tests(BuildableObject):
     """
     Run an input validator against a single input file.
     """
-    #Console.PrintAction("VALIDATE", self,
-    #                    "%s" % infile, progress=True)
+    #Console.PrintAction('VALIDATE', self,
+    #                    infile, progress=True)
     validationfile = os.path.splitext(infile)[0] + FileNames.VALIDATION_EXT
     res = yield validator.Run(
       args=(), cwd=self.out_dir,
@@ -2176,16 +2175,16 @@ class Tests(BuildableObject):
       redirect_error=True)
     if res.status == RunResult.NG:
       ctx.errors.Error(self,
-                       "%s: Validation Failed" % infile)
+                       '%s: Validation Failed' % infile)
       log = FileUtil.ReadFile(os.path.join(self.out_dir, validationfile))
       Console.PrintLog(log)
       raise Bailout([False])
     elif res.status != RunResult.OK:
       ctx.errors.Error(self,
-                       "%s: Validator Failed: %s" % (infile, res.status))
+                       '%s: Validator Failed: %s' % (infile, res.status))
       raise Bailout([False])
-    Console.PrintAction("VALIDATE", self,
-                        "%s: PASSED" % infile, progress=True)
+    Console.PrintAction('VALIDATE', self,
+                        '%s: PASSED' % infile, progress=True)
     yield True
 
   @GeneratorTask.FromFunction
@@ -2196,10 +2195,10 @@ class Tests(BuildableObject):
     if self.judge is None:
       yield True
     if not self.judge.QUIET_COMPILE:
-      Console.PrintAction("COMPILE", self, self.judge.src_name)
+      Console.PrintAction('COMPILE', self, self.judge.src_name)
     res = yield self.judge.Compile()
     if res.status != RunResult.OK:
-      ctx.errors.Error(self, "%s: Compile Error (%s)" % (self.judge.src_name, res.status))
+      ctx.errors.Error(self, '%s: Compile Error (%s)' % (self.judge.src_name, res.status))
       Console.PrintLog(self.judge.ReadCompileLog())
       yield False
     yield True
@@ -2211,7 +2210,7 @@ class Tests(BuildableObject):
     """
     reference_solution = self.problem.reference_solution
     if reference_solution is None:
-      ctx.errors.Error(self, "Reference solution is not available")
+      ctx.errors.Error(self, 'Reference solution is not available')
       yield False
     yield (yield reference_solution.Build(ctx))
 
@@ -2222,7 +2221,7 @@ class Tests(BuildableObject):
     """
     reference_solution = self.problem.reference_solution
     if reference_solution is None:
-      ctx.errors.Error(self, "Reference solution is not available")
+      ctx.errors.Error(self, 'Reference solution is not available')
       yield False
     infiles = self.ListInputFiles()
     results = yield TaskBranch([
@@ -2230,7 +2229,7 @@ class Tests(BuildableObject):
         for infile in infiles])
     if not all(results):
       yield False
-    Console.PrintAction("REFRUN", reference_solution)
+    Console.PrintAction('REFRUN', reference_solution)
     yield True
 
   @GeneratorTask.FromFunction
@@ -2241,8 +2240,8 @@ class Tests(BuildableObject):
     difffile = os.path.splitext(infile)[0] + FileNames.DIFF_EXT
     if os.path.isfile(os.path.join(self.out_dir, difffile)):
       yield True
-    #Console.PrintAction("REFRUN", reference_solution,
-    #                    "%s" % infile, progress=True)
+    #Console.PrintAction('REFRUN', reference_solution,
+    #                    infile, progress=True)
     res = yield reference_solution.Run(
       args=(), cwd=self.out_dir,
       input=os.path.join(self.out_dir, infile),
@@ -2251,15 +2250,15 @@ class Tests(BuildableObject):
     if res.status != RunResult.OK:
       ctx.errors.Error(reference_solution, res.status)
       raise Bailout([False])
-    Console.PrintAction("REFRUN", reference_solution,
-                        "%s: DONE" % infile, progress=True)
+    Console.PrintAction('REFRUN', reference_solution,
+                        '%s: DONE' % infile, progress=True)
     yield True
 
   @GeneratorTask.FromFunction
   def _GenerateConcatTest(self, ctx):
     if not self.concat_test:
       yield True
-    Console.PrintAction("GENERATE", self, progress=True)
+    Console.PrintAction('GENERATE', self, progress=True)
     concat_infile = FileNames.CONCAT_INFILE
     concat_difffile = FileNames.CONCAT_DIFFFILE
     FileUtil.CreateEmptyFile(os.path.join(self.out_dir, concat_infile))
@@ -2271,8 +2270,8 @@ class Tests(BuildableObject):
       infile = os.path.join(self.out_dir, infile)
       difffile = os.path.splitext(infile)[0] + FileNames.DIFF_EXT
       Console.PrintAction(
-        "GENERATE", self,
-        "[%d/%d] %s / %s" % (i+1, len(infiles),
+        'GENERATE', self,
+        '[%d/%d] %s / %s' % (i+1, len(infiles),
                              concat_infile, concat_difffile),
         progress=True)
       in_content = FileUtil.ReadFile(infile)
@@ -2283,8 +2282,8 @@ class Tests(BuildableObject):
       FileUtil.AppendFile(diff_content, os.path.join(self.out_dir, concat_difffile))
     FileUtil.AppendFile(terminator, os.path.join(self.out_dir, concat_infile))
     Console.PrintAction(
-      "GENERATE", self,
-      "%s (%d bytes) / %s (%d bytes)" % (
+      'GENERATE', self,
+      '%s (%d bytes) / %s (%d bytes)' % (
         concat_infile,
         os.path.getsize(os.path.join(self.out_dir, concat_infile)),
         concat_difffile,
@@ -2315,15 +2314,15 @@ class Tests(BuildableObject):
       result = TestResult(self.problem, solution, [])
       result.good = False
       result.passed = False
-      result.detail = "Failed to build tests"
+      result.detail = 'Failed to build tests'
       yield [result]
     if not (yield solution.Build(ctx)):
       result = TestResult(self.problem, solution, [])
       result.good = False
       result.passed = False
-      result.detail = "Compile Error"
+      result.detail = 'Compile Error'
       yield [result]
-    Console.PrintAction("TEST", solution, progress=True)
+    Console.PrintAction('TEST', solution, progress=True)
     if not solution.IsCorrect() and solution.challenge_cases:
       result = yield self._TestSolutionWithChallengeCases(solution, ctx)
     else:
@@ -2333,19 +2332,19 @@ class Tests(BuildableObject):
       if result.IsTimeStatsAvailable(ctx):
         result.detail = result.GetTimeStats()
       else:
-        result.detail = "(*/*)"
+        result.detail = '(*/*)'
     else:
       assert result.detail
     status_row = []
     status_row += [
       result.good and Console.CYAN or Console.RED,
-      result.passed and "PASSED" or "FAILED",
+      result.passed and 'PASSED' or 'FAILED',
       Console.NORMAL,
-      " ",
+      ' ',
       result.detail]
     if result.cached:
-      status_row += [" ", "(cached)"]
-    Console.PrintAction("TEST", solution, *status_row)
+      status_row += [' ', '(cached)']
+    Console.PrintAction('TEST', solution, *status_row)
     if solution.IsCorrect() and not result.good:
       assert result.ruling_file
       judgefile = os.path.splitext(result.ruling_file)[0] + FileNames.JUDGE_EXT
@@ -2366,12 +2365,12 @@ class Tests(BuildableObject):
     for infile in challenge_cases:
       if infile not in infiles:
         ctx.errors.Error(solution,
-                         "Challenge case not found: %s" % infile)
+                         'Challenge case not found: %s' % infile)
         all_exists = False
     if not all_exists:
       result.good = False
       result.passed = False
-      result.detail = "Challenge case not found"
+      result.detail = 'Challenge case not found'
       yield result
     # Try challenge cases.
     yield TaskBranch([
@@ -2381,7 +2380,7 @@ class Tests(BuildableObject):
     if result.good is None:
       result.good = True
       result.passed = False
-      result.detail = "Expectedly Failed"
+      result.detail = 'Expectedly Failed'
     yield result
 
   @GeneratorTask.FromFunction
@@ -2389,8 +2388,8 @@ class Tests(BuildableObject):
     """
     Test a wrong solution which has explicitly-specified challenge cases.
     """
-    #Console.PrintAction("TEST", solution,
-    #                    "%s" % infile, progress=True)
+    #Console.PrintAction('TEST', solution,
+    #                    infile, progress=True)
     cookie = solution.GetCacheStamp()
     ignore_timeout = (infile == FileNames.CONCAT_INFILE)
     (verdict, time, cached) = yield self._TestOneCase(
@@ -2402,7 +2401,7 @@ class Tests(BuildableObject):
       result.ruling_file = infile
       result.good = False
       result.passed = True
-      result.detail = "%s: Unexpectedly Accepted" % infile
+      result.detail = '%s: Unexpectedly Accepted' % infile
       ctx.errors.Error(solution, result.detail)
       if ctx.options.ignore_errors:
         yield False
@@ -2412,14 +2411,14 @@ class Tests(BuildableObject):
       result.ruling_file = infile
       result.good = False
       result.passed = False
-      result.detail = "%s: Judge Error" % infile
+      result.detail = '%s: Judge Error' % infile
       ctx.errors.Error(solution, result.detail)
       if ctx.options.ignore_errors:
         yield False
       else:
         raise Bailout([False])
-    Console.PrintAction("TEST", solution,
-                        "%s: PASSED" % infile, progress=True)
+    Console.PrintAction('TEST', solution,
+                        '%s: PASSED' % infile, progress=True)
     yield True
 
   @GeneratorTask.FromFunction
@@ -2439,7 +2438,7 @@ class Tests(BuildableObject):
       result.good = solution.IsCorrect()
       result.passed = True
       if not result.good:
-        result.detail = "Unexpectedly Passed"
+        result.detail = 'Unexpectedly Passed'
     yield result
 
   @GeneratorTask.FromFunction
@@ -2448,8 +2447,8 @@ class Tests(BuildableObject):
     Test a solution without challenge cases.
     The solution can be marked as wrong but without challenge cases.
     """
-    #Console.PrintAction("TEST", solution,
-    #                    "%s" % infile, progress=True)
+    #Console.PrintAction('TEST', solution,
+    #                    infile, progress=True)
     cookie = solution.GetCacheStamp()
     ignore_timeout = (infile == FileNames.CONCAT_INFILE)
     (verdict, time, cached) = yield self._TestOneCase(
@@ -2461,7 +2460,7 @@ class Tests(BuildableObject):
       result.ruling_file = infile
       result.good = False
       result.passed = False
-      result.detail = "%s: Judge Error" % infile
+      result.detail = '%s: Judge Error' % infile
       ctx.errors.Error(solution, result.detail)
       if ctx.options.ignore_errors:
         yield False
@@ -2470,7 +2469,7 @@ class Tests(BuildableObject):
     elif verdict != TestResult.AC:
       result.ruling_file = infile
       result.passed = False
-      result.detail = "%s: %s" % (infile, verdict)
+      result.detail = '%s: %s' % (infile, verdict)
       if solution.IsCorrect():
         result.good = False
         ctx.errors.Error(solution, result.detail)
@@ -2481,8 +2480,8 @@ class Tests(BuildableObject):
       else:
         raise Bailout([False])
     result.cases[infile].time = time
-    Console.PrintAction("TEST", solution,
-                        "%s: PASSED" % infile, progress=True)
+    Console.PrintAction('TEST', solution,
+                        '%s: PASSED' % infile, progress=True)
     yield True
 
   @GeneratorTask.FromFunction
@@ -2547,7 +2546,7 @@ class Tests(BuildableObject):
       yield (TestResult.AC, time)
     if res.status == RunResult.NG:
       yield (TestResult.WA, None)
-    yield ("Validator " + res.status, None)
+    yield ('Validator ' + res.status, None)
 
   @GeneratorTask.FromFunction
   def Pack(self, ctx):
@@ -2561,7 +2560,7 @@ class Tests(BuildableObject):
       if not (yield self.Build(ctx)):
         yield False
     infiles = self.ListInputFiles()
-    Console.PrintAction("PACK", self, progress=True)
+    Console.PrintAction('PACK', self, progress=True)
     if not os.path.isdir(self.pack_dir):
       try:
         FileUtil.MakeDir(self.pack_dir)
@@ -2575,29 +2574,29 @@ class Tests(BuildableObject):
       packed_difffile = str(i+1) + FileNames.DIFF_EXT
       try:
         Console.PrintAction(
-          "PACK",
+          'PACK',
           self,
-          "%s -> %s" % (infile, packed_infile),
+          '%s -> %s' % (infile, packed_infile),
           progress=True)
         FileUtil.CopyFile(os.path.join(self.out_dir, infile),
                           os.path.join(self.pack_dir, packed_infile))
         Console.PrintAction(
-          "PACK",
+          'PACK',
           self,
-          "%s -> %s" % (difffile, packed_difffile),
+          '%s -> %s' % (difffile, packed_difffile),
           progress=True)
         FileUtil.CopyFile(os.path.join(self.out_dir, difffile),
                           os.path.join(self.pack_dir, packed_difffile))
       except:
         ctx.errors.Exception(self)
         yield False
-    tar_args = ("tar", "czf",
+    tar_args = ('tar', 'czf',
                 os.path.join(os.pardir, FileNames.TESTS_PACKED_TARBALL),
                 os.curdir)
     Console.PrintAction(
-      "PACK",
+      'PACK',
       self,
-      " ".join(tar_args),
+      ' '.join(tar_args),
       progress=True)
     devnull = FileUtil.OpenNull()
     task = ExternalProcessTask(
@@ -2610,10 +2609,10 @@ class Tests(BuildableObject):
       yield False
     ret = proc.returncode
     if ret != 0:
-      ctx.errors.Error(self, "tar failed: ret = %d" % ret)
+      ctx.errors.Error(self, 'tar failed: ret = %d' % ret)
       yield False
     Console.PrintAction(
-      "PACK",
+      'PACK',
       self,
       FileNames.TESTS_PACKED_TARBALL)
     yield True
@@ -2623,7 +2622,7 @@ class Tests(BuildableObject):
     """
     Remove test cases.
     """
-    Console.PrintAction("CLEAN", self)
+    Console.PrintAction('CLEAN', self)
     try:
       FileUtil.RemoveTree(self.out_dir)
     except:
@@ -2655,7 +2654,7 @@ class Tests(BuildableObject):
     def tokenize_cmp(a, b):
       def tokenize(s):
         def replace_digits(match):
-          return "%08s" % match.group(0)
+          return '%08s' % match.group(0)
         return re.sub(r'\d+', replace_digits, s)
       return cmp(tokenize(a), tokenize(b))
     infiles.sort(tokenize_cmp)
@@ -2678,9 +2677,9 @@ class Solution(BuildableObject):
   def _PreLoad(self, ctx):
     self.code = None
     self._AddCodeRegisterer('code', 'solution')
-    self._export_dict["solution"] = self
-    self._export_dict["root"] = self.root
-    self._export_dict["problem"] = self.problem
+    self._export_dict['solution'] = self
+    self._export_dict['root'] = self.root
+    self._export_dict['problem'] = self.problem
 
   def _PostLoad(self, ctx):
     source_exts = {
@@ -2706,11 +2705,11 @@ class Solution(BuildableObject):
           solution_func = source_exts[ext]
       if ambiguous:
         ctx.errors.Error(self,
-                         ("Multiple source files found; " +
-                          "specify explicitly in " +
+                         ('Multiple source files found; ' +
+                          'specify explicitly in ' +
                           self.CONFIG_FILE))
       elif src is None:
-        ctx.errors.Error(self, "Source file not found")
+        ctx.errors.Error(self, 'Source file not found')
       else:
         solution_func(src=src)
     # Decide if this solution is correct or not.
@@ -2732,20 +2731,20 @@ class Solution(BuildableObject):
     """
     Build this solution.
     """
-    #Console.PrintAction("BUILD", self)
+    #Console.PrintAction('BUILD', self)
     if self.IsBuildCached():
-      Console.PrintAction("COMPILE", self, "up-to-date")
+      Console.PrintAction('COMPILE', self, 'up-to-date')
       yield True
     if not self.code.QUIET_COMPILE:
-      Console.PrintAction("COMPILE", self)
+      Console.PrintAction('COMPILE', self)
     res = yield self.code.Compile()
     log = self.code.ReadCompileLog()
     if res.status != RunResult.OK:
-      ctx.errors.Error(self, "Compile Error (%s)" % res.status)
+      ctx.errors.Error(self, 'Compile Error (%s)' % res.status)
       Console.PrintLog(log)
       yield False
     if log:
-      Console.Print("Compiler warnings found:")
+      Console.Print('Compiler warnings found:')
       Console.PrintLog(log)
     if not self.SetCacheStamp(ctx):
       yield False
@@ -2772,7 +2771,7 @@ class Solution(BuildableObject):
     """
     Clean this solution.
     """
-    Console.PrintAction("CLEAN", self)
+    Console.PrintAction('CLEAN', self)
     e = yield self.code.Clean()
     if e:
       ctx.errors.Exception(self, e)
@@ -2791,7 +2790,7 @@ class Rime(object):
     Main method called when invoked as stand-alone script.
     """
     # Banner.
-    Console.Print("Rime: Tool for Programming Contest Organizers")
+    Console.Print('Rime: Tool for Programming Contest Organizers')
     Console.Print()
     # Parse arguments.
     (cmd, params, options) = self._ParseArgs(args)
@@ -2805,10 +2804,10 @@ class Rime(object):
     # Try to load config files.
     root = self.LoadRoot(os.getcwd(), ctx)
     if not root:
-      Console.PrintError("RIMEROOT not found. Make sure you are in Rime subtree.")
+      Console.PrintError('RIMEROOT not found. Make sure you are in Rime subtree.')
       return 1
     if ctx.errors.HasError():
-      Console.PrintError("Encountered error on loading config files.")
+      Console.PrintError('Encountered error on loading config files.')
       return 1
     # Decide target object.
     # Note: currently all commands recognizes first parameter as base_dir.
@@ -2819,27 +2818,27 @@ class Rime(object):
       base_dir = os.getcwd()
     obj = root.FindByBaseDir(base_dir)
     if not obj:
-      Console.PrintError("Target directory is not managed by Rime.")
+      Console.PrintError('Target directory is not managed by Rime.')
       return 1
     # Run the task.
     graph = self.CreateTaskGraph(ctx)
     try:
       if cmd == 'build':
         success = graph.Run(obj.Build(ctx))
-        Console.Print("Finished Build.")
+        Console.Print('Finished Build.')
       elif cmd == 'test':
         results = graph.Run(obj.Test(ctx))
-        Console.Print("Finished Test.")
+        Console.Print('Finished Test.')
         Console.Print()
         self.PrintTestSummary(results, ctx)
       elif cmd == 'clean':
         success = graph.Run(obj.Clean(ctx))
-        Console.Print("Finished Clean.")
+        Console.Print('Finished Clean.')
       elif cmd == 'pack':
         success = graph.Run(obj.Pack(ctx))
-        Console.Print("Finished Pack.")
+        Console.Print('Finished Pack.')
       else:
-        Console.PrintError("Unknown command: %s" % cmd)
+        Console.PrintError('Unknown command: %s' % cmd)
         return 1
     except KeyboardInterrupt:
       if ctx.options.debug >= 1:
@@ -2848,7 +2847,7 @@ class Rime(object):
     finally:
       graph.Close()
     Console.Print()
-    Console.Print(Console.BOLD, "Error Summary:", Console.NORMAL)
+    Console.Print(Console.BOLD, 'Error Summary:', Console.NORMAL)
     ctx.errors.PrintSummary()
     return 0
 
@@ -2888,7 +2887,7 @@ class Rime(object):
   def PrintTestSummary(self, results, ctx):
     if len(results) == 0:
       return
-    Console.Print(Console.BOLD, "Test Summary:", Console.NORMAL)
+    Console.Print(Console.BOLD, 'Test Summary:', Console.NORMAL)
     solution_name_width = max(
       map(lambda t: len(t.solution.name), results))
     last_problem = None
@@ -2898,48 +2897,48 @@ class Rime(object):
                        Console.CYAN,
                        result.problem.name,
                        Console.NORMAL,
-                       " ... %d solutions, %d tests" %
+                       ' ... %d solutions, %d tests' %
                        (len(result.problem.solutions),
                         len(result.problem.tests.ListInputFiles()))]
         Console.Print(*problem_row)
         last_problem = result.problem
-      status_row = ["  "]
+      status_row = ['  ']
       status_row += [
         result.solution.IsCorrect() and Console.GREEN or Console.YELLOW,
         result.solution.name.ljust(solution_name_width),
         Console.NORMAL,
-        " "]
+        ' ']
       status_row += [
         result.good and Console.CYAN or Console.RED,
-        result.passed and "PASSED" or "FAILED",
+        result.passed and 'PASSED' or 'FAILED',
         Console.NORMAL,
-        " "]
+        ' ']
       if result.good:
         if result.passed:
           if result.IsTimeStatsAvailable(ctx):
             status_row += [result.GetTimeStats()]
           else:
-            status_row += ["(*/*)"]
+            status_row += ['(*/*)']
         else:
-          status_row += ["Expectedly Failed"]
+          status_row += ['Expectedly Failed']
       else:
         if result.passed:
-          status_row += ["Unexpectedly Passed"]
+          status_row += ['Unexpectedly Passed']
         else:
           if result.ruling_file:
             status_row += [result.cases[result.ruling_file].verdict,
-                           ": ",
+                           ': ',
                            result.ruling_file]
           else:
             status_row += [result.detail]
       if result.cached:
-        status_row += [" ", "(cached)"]
+        status_row += [' ', '(cached)']
       Console.Print(*status_row)
     if not (ctx.options.precise or ctx.options.parallelism == 1):
       Console.Print()
-      Console.Print("Note: Timings are not displayed when "
-                    "parallel testing is enabled.")
-      Console.Print("      To show them, try -p (--precise).")
+      Console.Print('Note: Timings are not displayed when '
+                    'parallel testing is enabled.')
+      Console.Print('      To show them, try -p (--precise).')
 
   def GetOptionParser(self):
     """
@@ -2947,17 +2946,17 @@ class Rime(object):
     """
     parser = optparse.OptionParser(add_help_option=False)
     parser.add_option('-j', '--jobs', dest='parallelism',
-                      default=1, action="store", type="int")
+                      default=1, action='store', type='int')
     parser.add_option('-p', '--precise', dest='precise',
-                      default=False, action="store_true")
+                      default=False, action='store_true')
     parser.add_option('-i', '--ignore-errors', dest='ignore_errors',
-                      default=False, action="store_true")
+                      default=False, action='store_true')
     parser.add_option('-C', '--cache-tests', dest='cache_tests',
-                      default=False, action="store_true")
+                      default=False, action='store_true')
     parser.add_option('-d', '--debug', dest='debug',
-                      default=0, action="count")
+                      default=0, action='count')
     parser.add_option('-h', '--help', dest='show_help',
-                      default=False, action="store_true")
+                      default=False, action='store_true')
     return parser
 
   def GetDefaultOptions(self):
@@ -2985,7 +2984,7 @@ class Rime(object):
     """
     system = platform.system()
     if system in ('Windows', 'Microsoft') or system.startswith('CYGWIN'):
-      Console.Print("Note: Running Rime under Windows will be unstable.")
+      Console.Print('Note: Running Rime under Windows will be unstable.')
     return True
 
 
